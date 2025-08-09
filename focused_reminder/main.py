@@ -1,23 +1,18 @@
-"""A PyQt6 script to draw a gradient border around the edges of the current screen using cool colors, with a styled notification bar in the middle of the top border. The bar displays Apple Reminders data plus an interactive countdown timer (default 25 minutes) and Pause/Resume and Reset buttons.
-Usage:
-./screen_borders.py -h
-./screen_borders.py -v  # To log INFO messages.
-./screen_borders.py -vv # To log DEBUG messages.
-./screen_borders.py     # default 25 min countdown (configurable in settings)
-"""
-
 import json
 
 # =============================================================================
 import logging
+import os
 import sys
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from pathlib import Path
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtCore import QUrl as QtQUrl
 from PyQt6.QtGui import (
     QBrush,
     QColor,
+    QDesktopServices,
     QFont,
     QFontMetrics,
     QKeySequence,
@@ -37,6 +32,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -196,7 +192,6 @@ def parse_args():
         dest="verbose",
         help="Increase verbosity of logging output",
     )
-
     return parser.parse_args()
 
 
@@ -248,11 +243,9 @@ class ConfigDialog(QDialog):
         theme_layout.addWidget(self.theme_combo)
         theme_group.setLayout(theme_layout)
         layout.addWidget(theme_group)
-
         # Custom settings section
         custom_group = QGroupBox("Custom Settings")
         custom_layout = QFormLayout()
-
         # Border colors
         border_label = QLabel("Border Colors:")
         custom_layout.addRow(border_label)
@@ -263,7 +256,6 @@ class ConfigDialog(QDialog):
         border_layout.addWidget(self.border_start_btn)
         border_layout.addWidget(QLabel("End:"))
         border_layout.addWidget(self.border_end_btn)
-
         # Border width
         self.border_width_spin = QSpinBox()
         self.border_width_spin.setRange(1, 50)
@@ -273,7 +265,6 @@ class ConfigDialog(QDialog):
         border_layout.addStretch()
         custom_layout.addRow(border_layout)
         custom_layout.addRow(self._separator())
-
         # Notification background colors
         notif_label = QLabel("Notification Background:")
         custom_layout.addRow(notif_label)
@@ -290,13 +281,11 @@ class ConfigDialog(QDialog):
         notif_layout.addStretch()
         custom_layout.addRow(notif_layout)
         custom_layout.addRow(self._separator())
-
         # Button Icons - Changed to use QFormLayout rows instead of QGridLayout
         self.icon_pause_edit = QLineEdit(current_theme["icon_pause"])
         self.icon_play_edit = QLineEdit(current_theme["icon_play"])
         self.icon_reset_edit = QLineEdit(current_theme["icon_reset"])
         self.icon_done_edit = QLineEdit(current_theme["icon_done"])
-
         # Create horizontal layouts for each icon pair to maintain alignment
         pause_play_layout = QHBoxLayout()
         pause_play_layout.addWidget(QLabel("Pause:"))
@@ -304,20 +293,17 @@ class ConfigDialog(QDialog):
         pause_play_layout.addWidget(QLabel("Play:"))
         pause_play_layout.addWidget(self.icon_play_edit)
         pause_play_layout.addStretch()
-
         reset_done_layout = QHBoxLayout()
         reset_done_layout.addWidget(QLabel("Reset:"))
         reset_done_layout.addWidget(self.icon_reset_edit)
         reset_done_layout.addWidget(QLabel("Done:"))
         reset_done_layout.addWidget(self.icon_done_edit)
         reset_done_layout.addStretch()
-
         button_icons_label = QLabel("Button Icons:")
         custom_layout.addRow(button_icons_label)
         custom_layout.addRow("", pause_play_layout)
         custom_layout.addRow("", reset_done_layout)
         custom_layout.addRow(self._separator())
-
         # Font settings - Changed to maintain left alignment
         self.font_family_edit = QLineEdit(current_theme["main_font_family"])
         self.font_size_spin = QSpinBox()
@@ -333,7 +319,6 @@ class ConfigDialog(QDialog):
         custom_layout.addRow(main_font_label)
         custom_layout.addRow("", font_layout)
         custom_layout.addRow(self._separator())
-
         # Timer configuration (minutes)
         self.timer_minutes_spin = QSpinBox()
         self.timer_minutes_spin.setRange(1, 24 * 60)  # 1 minute to 24 hours
@@ -341,10 +326,8 @@ class ConfigDialog(QDialog):
         current_timer = getattr(parent_widget, "countdown_seconds", 25 * 60)
         self.timer_minutes_spin.setValue(max(1, current_timer // 60))
         custom_layout.addRow("Timer (minutes):", self.timer_minutes_spin)
-
         custom_group.setLayout(custom_layout)
         layout.addWidget(custom_group)
-
         # Buttons
         button_layout = QHBoxLayout()
         apply_btn = DialogButton("Apply")
@@ -358,7 +341,6 @@ class ConfigDialog(QDialog):
         button_layout.addWidget(ok_btn)
         button_layout.addWidget(cancel_btn)
         layout.addLayout(button_layout)
-
         self.setLayout(layout)
 
     def load_predefined_theme(self, theme_name):
@@ -474,15 +456,80 @@ class BorderWidget(QWidget):
         self.setup_shortcuts()
 
     def init_remindkit(self):
-        """Initialize RemindKit instance and test basic connection"""
+        """Initialize RemindKit instance and test basic connection.
+
+        If RemindKit cannot access reminders due to lack of permission, prompt the user
+        with instructions and (on macOS) a button that opens Privacy & Security -> Reminders.
+        """
         try:
             self.remind_kit = RemindKit()
             # Test basic connection by getting default calendar
             default_calendar = self.remind_kit.calendars.get_default()
             logging.info(f"RemindKit initialized successfully. Default calendar: {default_calendar.name}")
-        except Exception:
+        except Exception as e:
+            # Log the exception for debugging
             logging.exception("Failed to initialize RemindKit")
             self.remind_kit = None
+            # Inspect the error message to see if it looks like a permissions/authorization issue.
+            err_str = str(e).lower()
+            if "unauthor" in err_str or "access" in err_str or "permission" in err_str:
+                # Ask the user to grant permission
+                self.prompt_for_reminders_permission(error_message=str(e))
+            else:
+                # Unknown failure - show info but don't aggressively prompt
+                logging.warning("RemindKit init failed for a non-permission reason. Exception: %s", e)
+
+    def prompt_for_reminders_permission(self, error_message: str = ""):
+        """Show a dialog explaining the permission problem and offer to open Settings.
+
+        On macOS we attempt to open the System Settings privacy Reminders pane using the
+        x-apple.systempreferences URL scheme. On other platforms we give instructions.
+        """
+        logging.info("Prompting user to grant Reminders permission.")
+        title = "Reminders Permission Required"
+        body = (
+            "This app needs permission to access your Reminders so it can show and complete reminders.\n\n"
+            "Please allow Reminders access in your system settings.\n\n"
+            "If you'd like, click 'Open Settings' to be taken to the privacy settings page (macOS).\n\n"
+            "Error details:\n" + (error_message or "<no details>")
+        )
+        msg = QMessageBox(self)
+        msg.setWindowTitle(title)
+        msg.setText(body)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        open_button = msg.addButton("Open Settings", QMessageBox.ButtonRole.AcceptRole)
+        msg.setDefaultButton(open_button)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked == open_button:
+            # Try to take the user to the correct OS settings pane.
+            try:
+                if sys.platform == "darwin":
+                    # For macOS attempt to open Privacy & Security -> Reminders (anchor may vary by macOS version)
+                    # This uses the x-apple.systempreferences URL scheme which works on many macOS releases.
+                    url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders"
+                    # Fall back to general security pane if the reminders anchor isn't supported
+                    if not QDesktopServices.openUrl(QtQUrl(url)):
+                        QDesktopServices.openUrl(QtQUrl("x-apple.systempreferences:com.apple.preference.security"))
+                elif sys.platform == "win32":
+                    # Windows doesn't have a single "Reminders" privacy page equivalent.
+                    # Open the general Settings app to Privacy & app permissions, and instruct the user.
+                    # This uses the ms-settings: URI scheme available on modern Windows.
+                    try:
+                        os.system("start ms-settings:privacy")  # noqa: S605, S607
+                    except Exception:
+                        # fallback: open Settings app generically if possible
+                        logging.warning("Could not open Windows settings programmatically.")
+                        QDesktopServices.openUrl(QtQUrl("about:blank"))
+                else:
+                    # Linux / other: can't reliably open system privacy settings; open Reminders app if present
+                    # Try to open the Reminders app (macOS style) or show nothing; user must open settings manually.
+                    logging.info("Non-macOS platform: instruct the user to open system settings manually.")
+            except Exception:
+                logging.exception("Failed to open system settings programmatically.")
+        else:
+            logging.info("User dismissed the permission prompt.")
 
     def get_incomplete_reminders_due_today(self):
         """Get incomplete reminders due today or in the past"""
@@ -495,8 +542,13 @@ class BorderWidget(QWidget):
                 reminders = list(self.remind_kit.get_reminders(due_before=tomorrow, is_completed=False))
                 logging.info(f"Found {len(reminders)} incomplete reminders due before tomorrow")
                 return reminders
-            except Exception:
+            except Exception as e:
+                # If we receive an authorization-like error while fetching, prompt once for permission.
                 logging.exception("Failed to get incomplete reminders")
+                err_str = str(e).lower()
+                if "unauthor" in err_str or "access" in err_str or "permission" in err_str:
+                    # Prompt user for permission and then return empty list for now.
+                    self.prompt_for_reminders_permission(error_message=str(e))
                 return []
         return []
 
@@ -559,7 +611,6 @@ class BorderWidget(QWidget):
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(current_theme["button_spacing"])
-
         # Complete Reminder button
         self.complete_reminder_btn = QPushButton(current_theme["icon_done"], self.control_widget)
         self.complete_reminder_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
@@ -571,7 +622,6 @@ class BorderWidget(QWidget):
             f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
         )
         self.complete_reminder_btn.clicked.connect(self.complete_current_reminder)
-
         # Pause/Resume button
         self.pause_resume_btn = QPushButton(current_theme["icon_pause"], self.control_widget)
         self.pause_resume_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
@@ -583,7 +633,6 @@ class BorderWidget(QWidget):
             f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
         )
         self.pause_resume_btn.clicked.connect(self.toggle_pause_resume)
-
         # Reset button
         self.reset_btn = QPushButton(current_theme["icon_reset"], self.control_widget)
         self.reset_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
@@ -594,7 +643,6 @@ class BorderWidget(QWidget):
             f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
         )
         self.reset_btn.clicked.connect(self.reset_timer)
-
         button_layout.addWidget(self.complete_reminder_btn)
         button_layout.addWidget(self.pause_resume_btn)
         button_layout.addWidget(self.reset_btn)
@@ -663,23 +711,19 @@ class BorderWidget(QWidget):
         width = self.width()
         height = self.height()
         logging.debug(f"Widget dimensions: width={width}, height={height}")
-
         # Gradient for border
         gradient = QLinearGradient(QPointF(0, 0), QPointF(width, height))
         gradient.setColorAt(0.0, QColor(*current_theme["border_color_start"]))
         gradient.setColorAt(1.0, QColor(*current_theme["border_color_end"]))
         pen = QPen(gradient, current_theme["border_width"])
         painter.setPen(pen)
-
         # Font settings
         font = QFont(current_theme["main_font_family"], current_theme["main_font_size"])
         painter.setFont(font)
         font_metrics = QFontMetrics(font)
-
         # Build text string
         mm, ss = divmod(self.remaining, 60)
         timer_str = f"{mm:02}:{ss:02}"
-
         # Get reminder text if available
         reminder_text = self.get_next_reminder_text()
         # Enable the 'complete' button only when a reminder is available
@@ -691,7 +735,6 @@ class BorderWidget(QWidget):
         display_text = f"{timer_str}   {reminder_text}" if reminder_text else timer_str
         text_width = font_metrics.horizontalAdvance(display_text)
         text_height = font_metrics.height()
-
         # Notification bar geometry
         btn_total_width = (
             self.complete_reminder_btn.width()
@@ -708,7 +751,6 @@ class BorderWidget(QWidget):
         text_area_height = text_height + current_theme["notification_padding"]
         text_area_x = (width - text_area_width) // 2
         text_area_y = current_theme["notification_offset"]
-
         # Draw notification bar background
         notification_gradient = QLinearGradient(
             QPointF(text_area_x, text_area_y), QPointF(text_area_x + text_area_width, text_area_y)
@@ -723,7 +765,6 @@ class BorderWidget(QWidget):
         painter.drawRoundedRect(
             text_area, current_theme["notification_corner_radius"], current_theme["notification_corner_radius"]
         )
-
         # Draw text
         painter.setPen(QColor(*current_theme["notification_text_color"]))
         text_rect = text_area.adjusted(
@@ -737,7 +778,6 @@ class BorderWidget(QWidget):
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             display_text,
         )
-
         # Draw borders
         painter.setPen(pen)
         painter.drawLine(0, height - 1, width - 1, height - 1)  # Bottom
@@ -746,7 +786,6 @@ class BorderWidget(QWidget):
         painter.drawLine(
             0, current_theme["notification_offset"], width - 1, current_theme["notification_offset"]
         )  # Top
-
         # Position controls
         if self.control_widget:
             control_x = int(
@@ -759,7 +798,6 @@ class BorderWidget(QWidget):
             )
             self.control_widget.move(control_x, control_y)
             self.control_widget.show()
-
         logging.info("Gradient border and notification bar drawn successfully")
 
 
@@ -768,7 +806,6 @@ def main():
     args = parse_args()
     setup_logging(args.verbose)
     load_config()  # Load config at startup
-
     logging.debug(f"Starting main with verbosity: {args.verbose}")
     app = QApplication([])
     logging.info("QApplication initialized")

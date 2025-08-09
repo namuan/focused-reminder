@@ -23,6 +23,7 @@ exe = EXE(pyz,
           strip=False,
           upx=True,
           console=False,
+          entitlements_file='entitlements.plist',
           icon='assets\\icon.ico')
 
 coll = COLLECT(exe,
@@ -43,5 +44,6 @@ app = BUNDLE(coll,
                 'CFBundleShortVersionString': '1.0.0',
                 'NSPrincipalClass': 'NSApplication',
                 'NSHighResolutionCapable': True,
+                'NSRemindersUsageDescription': 'This app needs access to your Reminders.',
                 }
              )

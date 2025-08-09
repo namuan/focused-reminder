@@ -17,3 +17,4 @@ __pycache__/
 !LICENSE
 !tox.ini
 !main.spec
+!entitlements.plist
