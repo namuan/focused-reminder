@@ -28,6 +28,12 @@ clean-build: ## Clean build artifacts
 	@echo "🚀 Removing build artifacts"
 	@uv run python -c "import shutil; import os; shutil.rmtree('dist') if os.path.exists('dist') else None"
 
+package: clean-build ## Run installer
+	uv run pyinstaller main.spec
+
+install-macosx: package ## Installs application in users Application folder
+	./scripts/install-macosx.sh FocusedReminder.app
+
 .PHONY: help
 help:
 	@uv run python -c "import re; \
