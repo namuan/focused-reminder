@@ -23,7 +23,7 @@ exe = EXE(pyz,
           strip=False,
           upx=True,
           console=False,
-          icon='assets/icon.ico')
+          icon='assets\\icon.ico')
 
 coll = COLLECT(exe,
                a.binaries,
@@ -43,6 +43,5 @@ app = BUNDLE(coll,
                 'CFBundleShortVersionString': '1.0.0',
                 'NSPrincipalClass': 'NSApplication',
                 'NSHighResolutionCapable': True,
-                'LSUIElement': True,
                 }
              )
