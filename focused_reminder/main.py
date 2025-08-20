@@ -1,6 +1,5 @@
-import json
-
-# =============================================================================
+# focused_reminder/main.py
+import json  # =============================================================================
 import logging
 import os
 import sys
@@ -79,6 +78,7 @@ DEFAULT_THEME = {
     "button_spacing": 6,
     "button_container_padding": 10,
 }
+
 # Predefined themes
 PREDEFINED_THEMES = {
     "Default (Blue-Cyan)": DEFAULT_THEME,
@@ -124,8 +124,11 @@ PREDEFINED_THEMES = {
         "notification_bg_end": (255, 206, 84, 240),
     },
 }
+
 # Current active theme
 current_theme = DEFAULT_THEME.copy()
+# Track the currently selected predefined theme name
+current_theme_name = "Default (Blue-Cyan)"
 
 
 # Determine OS-specific config directory
@@ -146,11 +149,14 @@ CONFIG_FILE = get_config_dir() / "config.json"
 
 def load_config():
     """Load configuration from the OS-standard config location."""
-    global current_theme
+    global current_theme, current_theme_name
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, encoding="utf-8") as f:
                 saved_config = json.load(f)
+            # Load the selected theme name if available
+            if "_selected_theme_name" in saved_config:
+                current_theme_name = saved_config.pop("_selected_theme_name")
             # Update only the keys that exist in the saved config
             current_theme.update(saved_config)
             logging.info(f"Configuration loaded from {CONFIG_FILE}")
@@ -161,8 +167,11 @@ def load_config():
 def save_config():
     """Save current configuration to the OS-standard config location."""
     try:
+        # Create a copy of current_theme and add the selected theme name
+        config_to_save = current_theme.copy()
+        config_to_save["_selected_theme_name"] = current_theme_name
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(current_theme, f, indent=2)
+            json.dump(config_to_save, f, indent=2)
         logging.info(f"Configuration saved to {CONFIG_FILE}")
     except Exception:
         logging.exception(f"Failed to save config to {CONFIG_FILE}")
@@ -215,6 +224,37 @@ class ColorButton(QPushButton):
             self.update_color()
 
 
+def themes_match(theme1, theme2):
+    """Compare two themes to see if they match on key visual properties."""
+    # Key properties that define a theme's visual appearance
+    key_properties = [
+        "border_color_start",
+        "border_color_end",
+        "notification_bg_start",
+        "notification_bg_end",
+        "notification_text_color",
+        "button_text_color",
+        "button_bg_hover",
+        "icon_pause",
+        "icon_play",
+        "icon_reset",
+        "icon_done",
+        "icon_snooze",
+        "main_font_family",
+        "main_font_size",
+    ]
+
+    return all(theme1.get(prop) == theme2.get(prop) for prop in key_properties)
+
+
+def find_matching_theme_name(current_config):
+    """Find the predefined theme name that matches the current configuration."""
+    for theme_name, theme_config in PREDEFINED_THEMES.items():
+        if themes_match(current_config, theme_config):
+            return theme_name
+    return None
+
+
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -223,6 +263,8 @@ class ConfigDialog(QDialog):
         self.setFixedSize(500, 600)
         # Store original theme for cancel functionality
         self.original_theme = current_theme.copy()
+        # Store original theme name for cancel functionality
+        self.original_theme_name = current_theme_name
         # Store original timer for cancel functionality
         self.original_timer_seconds = getattr(parent, "countdown_seconds", 25 * 60)
         self.init_ui()
@@ -240,13 +282,27 @@ class ConfigDialog(QDialog):
         theme_layout = QVBoxLayout()
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(PREDEFINED_THEMES.keys())
+
+        # Set the currently selected theme name
+        if current_theme_name in PREDEFINED_THEMES:
+            index = list(PREDEFINED_THEMES.keys()).index(current_theme_name)
+            self.theme_combo.setCurrentIndex(index)
+        else:
+            # Fallback to matching theme if current_theme_name is not valid
+            matching_theme = find_matching_theme_name(current_theme)
+            if matching_theme:
+                index = list(PREDEFINED_THEMES.keys()).index(matching_theme)
+                self.theme_combo.setCurrentIndex(index)
+
         self.theme_combo.currentTextChanged.connect(self.load_predefined_theme)
         theme_layout.addWidget(self.theme_combo)
         theme_group.setLayout(theme_layout)
         layout.addWidget(theme_group)
+
         # Custom settings section
         custom_group = QGroupBox("Custom Settings")
         custom_layout = QFormLayout()
+
         # Border colors
         border_label = QLabel("Border Colors:")
         custom_layout.addRow(border_label)
@@ -257,6 +313,7 @@ class ConfigDialog(QDialog):
         border_layout.addWidget(self.border_start_btn)
         border_layout.addWidget(QLabel("End:"))
         border_layout.addWidget(self.border_end_btn)
+
         # Border width
         self.border_width_spin = QSpinBox()
         self.border_width_spin.setRange(1, 50)
@@ -266,6 +323,7 @@ class ConfigDialog(QDialog):
         border_layout.addStretch()
         custom_layout.addRow(border_layout)
         custom_layout.addRow(self._separator())
+
         # Notification background colors
         notif_label = QLabel("Notification Background:")
         custom_layout.addRow(notif_label)
@@ -282,12 +340,14 @@ class ConfigDialog(QDialog):
         notif_layout.addStretch()
         custom_layout.addRow(notif_layout)
         custom_layout.addRow(self._separator())
+
         # Button Icons - Changed to use QFormLayout rows instead of QGridLayout
         self.icon_pause_edit = QLineEdit(current_theme["icon_pause"])
         self.icon_play_edit = QLineEdit(current_theme["icon_play"])
         self.icon_reset_edit = QLineEdit(current_theme["icon_reset"])
         self.icon_done_edit = QLineEdit(current_theme["icon_done"])
         self.icon_snooze_edit = QLineEdit(current_theme["icon_snooze"])
+
         # Create horizontal layouts for each icon pair to maintain alignment
         pause_play_layout = QHBoxLayout()
         pause_play_layout.addWidget(QLabel("Pause:"))
@@ -295,6 +355,7 @@ class ConfigDialog(QDialog):
         pause_play_layout.addWidget(QLabel("Play:"))
         pause_play_layout.addWidget(self.icon_play_edit)
         pause_play_layout.addStretch()
+
         reset_done_layout = QHBoxLayout()
         reset_done_layout.addWidget(QLabel("Reset:"))
         reset_done_layout.addWidget(self.icon_reset_edit)
@@ -306,27 +367,32 @@ class ConfigDialog(QDialog):
         snooze_layout.addWidget(QLabel("Snooze:"))
         snooze_layout.addWidget(self.icon_snooze_edit)
         snooze_layout.addStretch()
+
         button_icons_label = QLabel("Button Icons:")
         custom_layout.addRow(button_icons_label)
         custom_layout.addRow("", pause_play_layout)
         custom_layout.addRow("", reset_done_layout)
         custom_layout.addRow("", snooze_layout)
         custom_layout.addRow(self._separator())
+
         # Font settings - Changed to maintain left alignment
         self.font_family_edit = QLineEdit(current_theme["main_font_family"])
         self.font_size_spin = QSpinBox()
         self.font_size_spin.setRange(8, 72)
         self.font_size_spin.setValue(current_theme["main_font_size"])
+
         font_layout = QHBoxLayout()
         font_layout.addWidget(QLabel("Family:"))
         font_layout.addWidget(self.font_family_edit)
         font_layout.addWidget(QLabel("Size:"))
         font_layout.addWidget(self.font_size_spin)
         font_layout.addStretch()
+
         main_font_label = QLabel("Main Font:")
         custom_layout.addRow(main_font_label)
         custom_layout.addRow("", font_layout)
         custom_layout.addRow(self._separator())
+
         # Timer configuration (minutes)
         self.timer_minutes_spin = QSpinBox()
         self.timer_minutes_spin.setRange(1, 24 * 60)  # 1 minute to 24 hours
@@ -334,8 +400,10 @@ class ConfigDialog(QDialog):
         current_timer = getattr(parent_widget, "countdown_seconds", 25 * 60)
         self.timer_minutes_spin.setValue(max(1, current_timer // 60))
         custom_layout.addRow("Timer (minutes):", self.timer_minutes_spin)
+
         custom_group.setLayout(custom_layout)
         layout.addWidget(custom_group)
+
         # Buttons
         button_layout = QHBoxLayout()
         apply_btn = DialogButton("Apply")
@@ -344,10 +412,12 @@ class ConfigDialog(QDialog):
         ok_btn.clicked.connect(self.accept_changes)
         cancel_btn = DialogButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
+
         button_layout.addWidget(apply_btn)
         button_layout.addStretch()
         button_layout.addWidget(ok_btn)
         button_layout.addWidget(cancel_btn)
+
         layout.addLayout(button_layout)
         self.setLayout(layout)
 
@@ -362,17 +432,20 @@ class ConfigDialog(QDialog):
         self.border_end_btn.color = theme["border_color_end"]
         self.border_end_btn.update_color()
         self.border_width_spin.setValue(theme["border_width"])
+
         self.notif_start_btn.color = theme["notification_bg_start"]
         self.notif_start_btn.update_color()
         self.notif_end_btn.color = theme["notification_bg_end"]
         self.notif_end_btn.update_color()
         self.text_color_btn.color = theme["notification_text_color"]
         self.text_color_btn.update_color()
+
         self.icon_pause_edit.setText(theme["icon_pause"])
         self.icon_play_edit.setText(theme["icon_play"])
         self.icon_reset_edit.setText(theme["icon_reset"])
         self.icon_done_edit.setText(theme["icon_done"])
         self.icon_snooze_edit.setText(theme["icon_snooze"])
+
         self.font_family_edit.setText(theme["main_font_family"])
         self.font_size_spin.setValue(theme["main_font_size"])
 
@@ -407,8 +480,10 @@ class ConfigDialog(QDialog):
         }
 
     def apply_changes(self):
-        global current_theme
+        global current_theme, current_theme_name
         current_theme.update(self.get_current_config())
+        # Update the selected theme name
+        current_theme_name = self.theme_combo.currentText()
         if self.parent():
             # Apply theme
             self.parent().apply_theme()
@@ -431,9 +506,11 @@ class ConfigDialog(QDialog):
         self.accept()
 
     def reject(self):
-        global current_theme
+        global current_theme, current_theme_name
         current_theme.clear()
         current_theme.update(self.original_theme)
+        # Restore original theme name
+        current_theme_name = self.original_theme_name
         if self.parent():
             # Re-apply theme
             self.parent().apply_theme()
@@ -456,8 +533,10 @@ class BorderWidget(QWidget):
         self.pause_resume_btn = None
         self.reset_btn = None
         self.remind_kit = None
+
         logging.debug("Initializing BorderWidget")
         self.init_remindkit()
+
         # Track the reminder currently shown in the notification bar
         self.current_reminder_id = None
         self.current_reminder_title = None
@@ -503,6 +582,7 @@ class BorderWidget(QWidget):
             "If you'd like, click 'Open Settings' to be taken to the privacy settings page (macOS).\n\n"
             "Error details:\n" + (error_message or "<no details>")
         )
+
         msg = QMessageBox(self)
         msg.setWindowTitle(title)
         msg.setText(body)
@@ -602,11 +682,14 @@ class BorderWidget(QWidget):
         screen = QApplication.primaryScreen().geometry()
         logging.info(f"Screen geometry: {screen}")
         self.setGeometry(screen)
+
         # Make the window frameless and transparent
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
         # Set window to stay on top
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+
         logging.debug("Window flags set: Frameless and transparent")
         self.create_buttons()
 
@@ -614,13 +697,16 @@ class BorderWidget(QWidget):
         # Remove existing control widget if it exists
         if self.control_widget is not None:
             self.control_widget.deleteLater()
+
         # Create new control widget for buttons
         self.control_widget = QWidget(self)
         self.control_widget.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.control_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(current_theme["button_spacing"])
+
         # Complete Reminder button
         self.complete_reminder_btn = QPushButton(current_theme["icon_done"], self.control_widget)
         self.complete_reminder_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
@@ -632,6 +718,7 @@ class BorderWidget(QWidget):
             f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
         )
         self.complete_reminder_btn.clicked.connect(self.complete_current_reminder)
+
         # Snooze button
         self.snooze_btn = QPushButton(current_theme["icon_snooze"], self.control_widget)
         self.snooze_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
@@ -642,6 +729,7 @@ class BorderWidget(QWidget):
             f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
         )
         self.snooze_btn.clicked.connect(self.snooze_current_reminder)
+
         # Pause/Resume button
         self.pause_resume_btn = QPushButton(current_theme["icon_pause"], self.control_widget)
         self.pause_resume_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
@@ -653,6 +741,7 @@ class BorderWidget(QWidget):
             f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
         )
         self.pause_resume_btn.clicked.connect(self.toggle_pause_resume)
+
         # Reset button
         self.reset_btn = QPushButton(current_theme["icon_reset"], self.control_widget)
         self.reset_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
@@ -663,10 +752,12 @@ class BorderWidget(QWidget):
             f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
         )
         self.reset_btn.clicked.connect(self.reset_timer)
+
         button_layout.addWidget(self.complete_reminder_btn)
         button_layout.addWidget(self.snooze_btn)
         button_layout.addWidget(self.pause_resume_btn)
         button_layout.addWidget(self.reset_btn)
+
         self.control_widget.setLayout(button_layout)
 
     def apply_theme(self):
@@ -887,24 +978,30 @@ class BorderWidget(QWidget):
         logging.debug("Painting border and notification bar")
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
         width = self.width()
         height = self.height()
         logging.debug(f"Widget dimensions: width={width}, height={height}")
+
         # Gradient for border
         gradient = QLinearGradient(QPointF(0, 0), QPointF(width, height))
         gradient.setColorAt(0.0, QColor(*current_theme["border_color_start"]))
         gradient.setColorAt(1.0, QColor(*current_theme["border_color_end"]))
         pen = QPen(gradient, current_theme["border_width"])
         painter.setPen(pen)
+
         # Font settings
         font = QFont(current_theme["main_font_family"], current_theme["main_font_size"])
         painter.setFont(font)
         font_metrics = QFontMetrics(font)
+
         # Build text string
         mm, ss = divmod(self.remaining, 60)
         timer_str = f"{mm:02}:{ss:02}"
+
         # Get reminder text if available
         reminder_text = self.get_next_reminder_text()
+
         # Enable the 'complete' and 'snooze' buttons only when a reminder is available
         if getattr(self, "complete_reminder_btn", None) is not None:
             import contextlib
@@ -917,9 +1014,11 @@ class BorderWidget(QWidget):
 
             with contextlib.suppress(Exception):
                 self.snooze_btn.setVisible(bool(reminder_text))
+
         display_text = f"{timer_str}   {reminder_text}" if reminder_text else timer_str
         text_width = font_metrics.horizontalAdvance(display_text)
         text_height = font_metrics.height()
+
         # Notification bar geometry
         # Calculate button width based on visible buttons
         visible_buttons = [self.pause_resume_btn, self.reset_btn]  # Always visible
@@ -937,6 +1036,7 @@ class BorderWidget(QWidget):
         text_area_height = text_height + current_theme["notification_padding"]
         text_area_x = (width - text_area_width) // 2
         text_area_y = current_theme["notification_offset"]
+
         # Draw notification bar background
         notification_gradient = QLinearGradient(
             QPointF(text_area_x, text_area_y), QPointF(text_area_x + text_area_width, text_area_y)
@@ -951,6 +1051,7 @@ class BorderWidget(QWidget):
         painter.drawRoundedRect(
             text_area, current_theme["notification_corner_radius"], current_theme["notification_corner_radius"]
         )
+
         # Draw text
         painter.setPen(QColor(*current_theme["notification_text_color"]))
         text_rect = text_area.adjusted(
@@ -964,6 +1065,7 @@ class BorderWidget(QWidget):
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             display_text,
         )
+
         # Draw borders
         painter.setPen(pen)
         painter.drawLine(0, height - 1, width - 1, height - 1)  # Bottom
@@ -972,6 +1074,7 @@ class BorderWidget(QWidget):
         painter.drawLine(
             0, current_theme["notification_offset"], width - 1, current_theme["notification_offset"]
         )  # Top
+
         # Position controls
         if self.control_widget:
             # Force the control widget to resize based on visible buttons only
@@ -987,6 +1090,7 @@ class BorderWidget(QWidget):
             )
             self.control_widget.move(control_x, control_y)
             self.control_widget.show()
+
         logging.info("Gradient border and notification bar drawn successfully")
 
 
@@ -995,12 +1099,15 @@ def main():
     args = parse_args()
     setup_logging(args.verbose)
     load_config()  # Load config at startup
+
     logging.debug(f"Starting main with verbosity: {args.verbose}")
     app = QApplication([])
     logging.info("QApplication initialized")
+
     border_widget = BorderWidget()
     border_widget.showMaximized()
     logging.info("BorderWidget shown")
+
     app.exec()
 
 
