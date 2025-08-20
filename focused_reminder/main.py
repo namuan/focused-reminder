@@ -60,18 +60,19 @@ DEFAULT_THEME = {
     "button_bg_hover": "rgba(255,255,255,80)",  # Semi-transparent white on hover
     "button_text_color": "black",
     "button_corner_radius": 8,
-    "button_width": 32,
-    "button_height": 28,
+    "button_width": 36,
+    "button_height": 32,
     # Button icons
     "icon_pause": "⏸",
     "icon_play": "▶",
     "icon_reset": "⏮",
     "icon_done": "✓",
+    "icon_snooze": "💤",
     # Fonts
     "main_font_family": "Arial",
     "main_font_size": 14,
     "icon_font_family": "Segoe UI Symbol",
-    "icon_font_size": 14,
+    "icon_font_size": 16,
     # Layout dimensions
     "notification_padding": 20,
     "notification_offset": 5,
@@ -286,6 +287,7 @@ class ConfigDialog(QDialog):
         self.icon_play_edit = QLineEdit(current_theme["icon_play"])
         self.icon_reset_edit = QLineEdit(current_theme["icon_reset"])
         self.icon_done_edit = QLineEdit(current_theme["icon_done"])
+        self.icon_snooze_edit = QLineEdit(current_theme["icon_snooze"])
         # Create horizontal layouts for each icon pair to maintain alignment
         pause_play_layout = QHBoxLayout()
         pause_play_layout.addWidget(QLabel("Pause:"))
@@ -299,10 +301,16 @@ class ConfigDialog(QDialog):
         reset_done_layout.addWidget(QLabel("Done:"))
         reset_done_layout.addWidget(self.icon_done_edit)
         reset_done_layout.addStretch()
+
+        snooze_layout = QHBoxLayout()
+        snooze_layout.addWidget(QLabel("Snooze:"))
+        snooze_layout.addWidget(self.icon_snooze_edit)
+        snooze_layout.addStretch()
         button_icons_label = QLabel("Button Icons:")
         custom_layout.addRow(button_icons_label)
         custom_layout.addRow("", pause_play_layout)
         custom_layout.addRow("", reset_done_layout)
+        custom_layout.addRow("", snooze_layout)
         custom_layout.addRow(self._separator())
         # Font settings - Changed to maintain left alignment
         self.font_family_edit = QLineEdit(current_theme["main_font_family"])
@@ -364,6 +372,7 @@ class ConfigDialog(QDialog):
         self.icon_play_edit.setText(theme["icon_play"])
         self.icon_reset_edit.setText(theme["icon_reset"])
         self.icon_done_edit.setText(theme["icon_done"])
+        self.icon_snooze_edit.setText(theme["icon_snooze"])
         self.font_family_edit.setText(theme["main_font_family"])
         self.font_size_spin.setValue(theme["main_font_size"])
 
@@ -386,6 +395,7 @@ class ConfigDialog(QDialog):
             "icon_play": self.icon_play_edit.text(),
             "icon_reset": self.icon_reset_edit.text(),
             "icon_done": self.icon_done_edit.text(),
+            "icon_snooze": self.icon_snooze_edit.text(),
             "main_font_family": self.font_family_edit.text(),
             "main_font_size": self.font_size_spin.value(),
             "icon_font_family": current_theme["icon_font_family"],
@@ -622,6 +632,16 @@ class BorderWidget(QWidget):
             f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
         )
         self.complete_reminder_btn.clicked.connect(self.complete_current_reminder)
+        # Snooze button
+        self.snooze_btn = QPushButton(current_theme["icon_snooze"], self.control_widget)
+        self.snooze_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
+        self.snooze_btn.setFlat(True)
+        self.snooze_btn.setFont(icon_font)
+        self.snooze_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {current_theme['button_bg_normal']}; color: {current_theme['button_text_color']}; border: none; padding: 0px; }}"
+            f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
+        )
+        self.snooze_btn.clicked.connect(self.snooze_current_reminder)
         # Pause/Resume button
         self.pause_resume_btn = QPushButton(current_theme["icon_pause"], self.control_widget)
         self.pause_resume_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
@@ -644,6 +664,7 @@ class BorderWidget(QWidget):
         )
         self.reset_btn.clicked.connect(self.reset_timer)
         button_layout.addWidget(self.complete_reminder_btn)
+        button_layout.addWidget(self.snooze_btn)
         button_layout.addWidget(self.pause_resume_btn)
         button_layout.addWidget(self.reset_btn)
         self.control_widget.setLayout(button_layout)
@@ -710,6 +731,158 @@ class BorderWidget(QWidget):
         except Exception:
             logging.exception(f"Failed to complete reminder id={self.current_reminder_id}")
 
+    def snooze_current_reminder(self):
+        """Move the currently displayed reminder 6 hours into the future from current time."""
+        if not self.remind_kit:
+            logging.warning("RemindKit is not initialized; cannot snooze reminder.")
+            return
+        if not self.current_reminder_id:
+            logging.info("No current reminder cached/displayed to snooze.")
+            return
+        try:
+            from datetime import datetime, timedelta
+
+            # Always set reminder to exactly 6 hours from current time, regardless of original due date
+            current_time = datetime.now()
+            new_due_date = current_time + timedelta(hours=6)
+
+            # Get the current reminder details for debugging
+            current_reminder = self._get_current_reminder_details()
+            if not current_reminder:
+                return
+
+            # Check if this is a past event (due date is before current time)
+            is_past_event = self._is_past_event(current_reminder, current_time)
+
+            # Handle the snooze operation
+            updated_reminder = self._handle_snooze_operation(current_reminder, new_due_date, is_past_event)
+
+            # Log success
+            self._log_snooze_success(current_time, new_due_date, updated_reminder)
+
+            # Verify the snooze operation
+            self._verify_snooze_operation(is_past_event, updated_reminder)
+
+            # Clear cached reminder since it's been moved; UI will fetch next on repaint
+            self.current_reminder_id = None
+            self.current_reminder_title = None
+            self.update()
+        except Exception:
+            logging.exception(f"Failed to snooze reminder id={self.current_reminder_id}")
+            # Don't clear the cached reminder if snooze failed, so user can try again
+
+    def _get_current_reminder_details(self):
+        """Get current reminder details for debugging."""
+        try:
+            current_reminder = self.remind_kit.get_reminder_by_id(self.current_reminder_id)
+            logging.info(
+                f"Current reminder details - Title: {current_reminder.title}, Original due: {current_reminder.due_date}, Is completed: {getattr(current_reminder, 'is_completed', 'unknown')}"
+            )
+            return current_reminder
+        except Exception as e:
+            logging.warning(f"Could not fetch current reminder details: {e}")
+            return None
+
+    def _is_past_event(self, current_reminder, current_time):
+        """Check if this is a past event."""
+        is_past_event = False
+        if current_reminder and current_reminder.due_date:
+            is_past_event = current_reminder.due_date < current_time
+            logging.info(f"Event is {'past' if is_past_event else 'future'} event")
+        return is_past_event
+
+    def _handle_snooze_operation(self, current_reminder, new_due_date, is_past_event):
+        """Handle the actual snooze operation."""
+        if is_past_event:
+            return self._handle_past_event_snooze(current_reminder, new_due_date)
+        else:
+            # For future events, use direct update
+            return self.remind_kit.update_reminder(self.current_reminder_id, due_date=new_due_date)
+
+    def _handle_past_event_snooze(self, current_reminder, new_due_date):
+        """Handle snoozing of past events by creating new reminder and completing old one."""
+        logging.info("Handling past event by creating new reminder and completing old one")
+        try:
+            # Create new reminder with snoozed time
+            new_reminder = self.remind_kit.create_reminder(
+                title=current_reminder.title,
+                due_date=new_due_date,
+                notes=getattr(current_reminder, "notes", None),
+                priority=getattr(current_reminder, "priority", None),
+                calendar_id=getattr(current_reminder, "calendar_id", None),
+            )
+            logging.info(f"Created new reminder with ID: {new_reminder.id}")
+
+            # Complete the original reminder
+            self.remind_kit.update_reminder(self.current_reminder_id, is_completed=True)
+            logging.info(f"Completed original reminder ID: {self.current_reminder_id}")
+
+            return new_reminder
+        except Exception:
+            logging.exception("Failed to create new reminder for past event")
+            # Fall back to trying direct update
+            return self.remind_kit.update_reminder(self.current_reminder_id, due_date=new_due_date)
+
+    def _log_snooze_success(self, current_time, new_due_date, updated_reminder):
+        """Log successful snooze operation."""
+        title = self.current_reminder_title or "<untitled>"
+        logging.info(
+            f"Successfully snoozed reminder '{title}' from {current_time} to {new_due_date} (6 hours from now)"
+        )
+        logging.info(
+            f"Updated reminder due date: {updated_reminder.due_date if updated_reminder else 'No return value'}"
+        )
+
+    def _verify_snooze_operation(self, is_past_event, updated_reminder):
+        """Verify the snooze operation was successful."""
+        try:
+            logging.info("=== Post-snooze reminder verification ===")
+            # Check if the snoozed reminder still appears in today's list
+            current_reminders = self.get_incomplete_reminders_due_today()
+            logging.info(f"Found {len(current_reminders)} incomplete reminders after snooze:")
+
+            # For past events, we created a new reminder, so check that ID instead
+            verification_id = updated_reminder.id if (is_past_event and updated_reminder) else self.current_reminder_id
+
+            self._log_current_reminders(current_reminders, verification_id)
+            self._verify_snoozed_reminder(verification_id)
+
+            if is_past_event:
+                self._verify_original_reminder_completed()
+
+            logging.info("=== End post-snooze verification ===")
+        except Exception as e:
+            logging.warning(f"Post-snooze verification failed: {e}")
+
+    def _log_current_reminders(self, current_reminders, verification_id):
+        """Log current reminders for verification."""
+        for i, reminder in enumerate(current_reminders):
+            is_snoozed = reminder.id == verification_id
+            logging.info(
+                f"  {i + 1}. '{reminder.title}' (ID: {reminder.id}) - Due: {reminder.due_date} {'<-- SNOOZED' if is_snoozed else ''}"
+            )
+
+    def _verify_snoozed_reminder(self, verification_id):
+        """Verify the snoozed reminder by ID."""
+        try:
+            snoozed_reminder = self.remind_kit.get_reminder_by_id(verification_id)
+            logging.info(
+                f"Snoozed reminder verification - Title: {snoozed_reminder.title}, New due: {snoozed_reminder.due_date}, Completed: {getattr(snoozed_reminder, 'is_completed', 'unknown')}"
+            )
+        except Exception as e:
+            logging.warning(f"Could not fetch snoozed reminder by ID: {e}")
+
+    def _verify_original_reminder_completed(self):
+        """Verify the original reminder was completed for past events."""
+        try:
+            old_reminder = self.remind_kit.get_reminder_by_id(self.current_reminder_id)
+            logging.info(
+                f"Original reminder status - Title: {old_reminder.title}, Completed: {getattr(old_reminder, 'is_completed', 'unknown')}"
+            )
+        except Exception as e:
+            logging.warning(f"Could not fetch original reminder by ID: {e}")
+            return
+
     def paintEvent(self, event):
         logging.debug("Painting border and notification bar")
         painter = QPainter(self)
@@ -732,22 +905,29 @@ class BorderWidget(QWidget):
         timer_str = f"{mm:02}:{ss:02}"
         # Get reminder text if available
         reminder_text = self.get_next_reminder_text()
-        # Enable the 'complete' button only when a reminder is available
+        # Enable the 'complete' and 'snooze' buttons only when a reminder is available
         if getattr(self, "complete_reminder_btn", None) is not None:
             import contextlib
 
             with contextlib.suppress(Exception):
                 self.complete_reminder_btn.setVisible(bool(reminder_text))
+
+        if getattr(self, "snooze_btn", None) is not None:
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                self.snooze_btn.setVisible(bool(reminder_text))
         display_text = f"{timer_str}   {reminder_text}" if reminder_text else timer_str
         text_width = font_metrics.horizontalAdvance(display_text)
         text_height = font_metrics.height()
         # Notification bar geometry
-        btn_total_width = (
-            self.complete_reminder_btn.width()
-            + self.pause_resume_btn.width()
-            + self.reset_btn.width()
-            + (2 * current_theme["button_spacing"])  # Two spacings between three buttons
-        )
+        # Calculate button width based on visible buttons
+        visible_buttons = [self.pause_resume_btn, self.reset_btn]  # Always visible
+        if reminder_text:  # Add reminder-specific buttons when reminder is available
+            visible_buttons.extend([self.complete_reminder_btn, self.snooze_btn])
+
+        btn_total_width = sum(btn.width() for btn in visible_buttons)
+        btn_total_width += (len(visible_buttons) - 1) * current_theme["button_spacing"]  # Spacings between buttons
         text_area_width = (
             text_width
             + current_theme["notification_padding"]
@@ -794,6 +974,9 @@ class BorderWidget(QWidget):
         )  # Top
         # Position controls
         if self.control_widget:
+            # Force the control widget to resize based on visible buttons only
+            self.control_widget.resize(btn_total_width, self.control_widget.height())
+
             control_x = int(
                 text_area_x + text_area_width - btn_total_width - (current_theme["button_container_padding"] // 2)
             )
