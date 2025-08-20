@@ -676,13 +676,19 @@ class BorderWidget(QWidget):
         self.pause_resume_btn.setText(current_theme["icon_pause"])
         self.update()
 
+    def get_configured_duration(self):
+        """Get the current duration from config.json"""
+        load_config()  # Refresh config in case it changed
+        return self.countdown_seconds
+
     def tick(self):
         if self.remaining > 0:
             self.remaining -= 1
         else:
             self.timer.stop()
             self.running = False
-            self.pause_resume_btn.setText(current_theme["icon_done"])
+            self.pause_resume_btn.setText(current_theme["icon_play"])
+            self.remaining = self.countdown_seconds  # Reset to configured duration
         self.update()
 
     def complete_current_reminder(self):
