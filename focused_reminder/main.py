@@ -78,6 +78,9 @@ DEFAULT_THEME = {
     "button_spacing": 6,
     "button_container_padding": 10,
     "reminder_time_window_minutes": 15,
+    # Full-screen gradient settings
+    "fullscreen_gradient_opacity": 30,  # Alpha value for gradient background (0-255)
+    "fullscreen_gradient_enabled": True,  # Whether to show gradient when timer stops
 }
 
 # Predefined themes
@@ -261,7 +264,7 @@ class ConfigDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Screen Border Configuration")
         self.setModal(True)
-        self.setFixedSize(500, 600)
+        self.setFixedSize(650, 750)
         # Store original theme for cancel functionality
         self.original_theme = current_theme.copy()
         # Store original theme name for cancel functionality
@@ -300,13 +303,13 @@ class ConfigDialog(QDialog):
         theme_group.setLayout(theme_layout)
         layout.addWidget(theme_group)
 
-        # Custom settings section
-        custom_group = QGroupBox("Custom Settings")
-        custom_layout = QFormLayout()
+        # Visual Appearance section
+        visual_group = QGroupBox("Visual Appearance")
+        visual_layout = QFormLayout()
 
         # Border colors
         border_label = QLabel("Border Colors:")
-        custom_layout.addRow(border_label)
+        visual_layout.addRow(border_label)
         border_layout = QHBoxLayout()
         self.border_start_btn = ColorButton(current_theme["border_color_start"])
         self.border_end_btn = ColorButton(current_theme["border_color_end"])
@@ -322,12 +325,12 @@ class ConfigDialog(QDialog):
         border_layout.addWidget(QLabel("Border Width:"))
         border_layout.addWidget(self.border_width_spin)
         border_layout.addStretch()
-        custom_layout.addRow(border_layout)
-        custom_layout.addRow(self._separator())
+        visual_layout.addRow(border_layout)
+        visual_layout.addRow(self._separator())
 
         # Notification background colors
         notif_label = QLabel("Notification Background:")
-        custom_layout.addRow(notif_label)
+        visual_layout.addRow(notif_label)
         notif_layout = QHBoxLayout()
         self.notif_start_btn = ColorButton(current_theme["notification_bg_start"])
         self.notif_end_btn = ColorButton(current_theme["notification_bg_end"])
@@ -339,10 +342,46 @@ class ConfigDialog(QDialog):
         notif_layout.addWidget(QLabel("Text Color:"))
         notif_layout.addWidget(self.text_color_btn)
         notif_layout.addStretch()
-        custom_layout.addRow(notif_layout)
-        custom_layout.addRow(self._separator())
+        visual_layout.addRow(notif_layout)
+        visual_layout.addRow(self._separator())
 
-        # Button Icons - Changed to use QFormLayout rows instead of QGridLayout
+        # Full-screen gradient configuration
+        self.gradient_opacity_spin = QSpinBox()
+        self.gradient_opacity_spin.setRange(0, 255)
+        self.gradient_opacity_spin.setValue(current_theme.get("fullscreen_gradient_opacity", 30))
+        visual_layout.addRow("Gradient Opacity (0-255):", self.gradient_opacity_spin)
+
+        from PyQt6.QtWidgets import QCheckBox
+
+        self.gradient_enabled_check = QCheckBox()
+        self.gradient_enabled_check.setChecked(current_theme.get("fullscreen_gradient_enabled", True))
+        visual_layout.addRow("Enable Full-screen Gradient:", self.gradient_enabled_check)
+        visual_layout.addRow(self._separator())
+
+        # Font settings
+        self.font_family_edit = QLineEdit(current_theme["main_font_family"])
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 72)
+        self.font_size_spin.setValue(current_theme["main_font_size"])
+
+        font_layout = QHBoxLayout()
+        font_layout.addWidget(QLabel("Family:"))
+        font_layout.addWidget(self.font_family_edit)
+        font_layout.addWidget(QLabel("Size:"))
+        font_layout.addWidget(self.font_size_spin)
+        font_layout.addStretch()
+
+        main_font_label = QLabel("Main Font:")
+        visual_layout.addRow(main_font_label)
+        visual_layout.addRow("", font_layout)
+
+        visual_group.setLayout(visual_layout)
+        layout.addWidget(visual_group)
+
+        # Button Icons section
+        icons_group = QGroupBox("Button Icons")
+        icons_layout = QFormLayout()
+
         self.icon_pause_edit = QLineEdit(current_theme["icon_pause"])
         self.icon_play_edit = QLineEdit(current_theme["icon_play"])
         self.icon_reset_edit = QLineEdit(current_theme["icon_reset"])
@@ -369,30 +408,16 @@ class ConfigDialog(QDialog):
         snooze_layout.addWidget(self.icon_snooze_edit)
         snooze_layout.addStretch()
 
-        button_icons_label = QLabel("Button Icons:")
-        custom_layout.addRow(button_icons_label)
-        custom_layout.addRow("", pause_play_layout)
-        custom_layout.addRow("", reset_done_layout)
-        custom_layout.addRow("", snooze_layout)
-        custom_layout.addRow(self._separator())
+        icons_layout.addRow("", pause_play_layout)
+        icons_layout.addRow("", reset_done_layout)
+        icons_layout.addRow("", snooze_layout)
 
-        # Font settings - Changed to maintain left alignment
-        self.font_family_edit = QLineEdit(current_theme["main_font_family"])
-        self.font_size_spin = QSpinBox()
-        self.font_size_spin.setRange(8, 72)
-        self.font_size_spin.setValue(current_theme["main_font_size"])
+        icons_group.setLayout(icons_layout)
+        layout.addWidget(icons_group)
 
-        font_layout = QHBoxLayout()
-        font_layout.addWidget(QLabel("Family:"))
-        font_layout.addWidget(self.font_family_edit)
-        font_layout.addWidget(QLabel("Size:"))
-        font_layout.addWidget(self.font_size_spin)
-        font_layout.addStretch()
-
-        main_font_label = QLabel("Main Font:")
-        custom_layout.addRow(main_font_label)
-        custom_layout.addRow("", font_layout)
-        custom_layout.addRow(self._separator())
+        # Behavior Settings section
+        behavior_group = QGroupBox("Behavior Settings")
+        behavior_layout = QFormLayout()
 
         # Timer configuration (minutes)
         self.timer_minutes_spin = QSpinBox()
@@ -400,16 +425,16 @@ class ConfigDialog(QDialog):
         parent_widget = self.parent()
         current_timer = getattr(parent_widget, "countdown_seconds", 25 * 60)
         self.timer_minutes_spin.setValue(max(1, current_timer // 60))
-        custom_layout.addRow("Timer (minutes):", self.timer_minutes_spin)
+        behavior_layout.addRow("Timer (minutes):", self.timer_minutes_spin)
 
         # Reminder time window configuration (minutes)
         self.reminder_time_window_spin = QSpinBox()
         self.reminder_time_window_spin.setRange(1, 120)
         self.reminder_time_window_spin.setValue(current_theme["reminder_time_window_minutes"])
-        custom_layout.addRow("Reminder Time Window (minutes):", self.reminder_time_window_spin)
+        behavior_layout.addRow("Reminder Time Window (minutes):", self.reminder_time_window_spin)
 
-        custom_group.setLayout(custom_layout)
-        layout.addWidget(custom_group)
+        behavior_group.setLayout(behavior_layout)
+        layout.addWidget(behavior_group)
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -460,6 +485,12 @@ class ConfigDialog(QDialog):
         if "reminder_time_window_minutes" in theme:
             self.reminder_time_window_spin.setValue(theme["reminder_time_window_minutes"])
 
+        # Update gradient configuration if it exists in the theme
+        if "fullscreen_gradient_opacity" in theme:
+            self.gradient_opacity_spin.setValue(theme["fullscreen_gradient_opacity"])
+        if "fullscreen_gradient_enabled" in theme:
+            self.gradient_enabled_check.setChecked(theme["fullscreen_gradient_enabled"])
+
     def get_current_config(self):
         return {
             "border_color_start": self.border_start_btn.color,
@@ -489,6 +520,8 @@ class ConfigDialog(QDialog):
             "button_spacing": current_theme["button_spacing"],
             "button_container_padding": current_theme["button_container_padding"],
             "reminder_time_window_minutes": self.reminder_time_window_spin.value(),
+            "fullscreen_gradient_opacity": self.gradient_opacity_spin.value(),
+            "fullscreen_gradient_enabled": self.gradient_enabled_check.isChecked(),
         }
 
     def apply_changes(self):
@@ -846,6 +879,14 @@ class BorderWidget(QWidget):
 
         self.control_widget.setLayout(button_layout)
 
+    def should_show_fullscreen_gradient(self):
+        """Determine if full-screen gradient should be displayed.
+
+        Returns True when timer is not running (paused or finished) and
+        gradient is enabled in theme configuration.
+        """
+        return not self.running and current_theme.get("fullscreen_gradient_enabled", True)
+
     def apply_theme(self):
         """Apply the current theme to the widget"""
         self.create_buttons()
@@ -1069,6 +1110,21 @@ class BorderWidget(QWidget):
         height = self.height()
         logging.debug(f"Widget dimensions: width={width}, height={height}")
 
+        # Draw full-screen gradient background when timer is not running
+        if self.should_show_fullscreen_gradient():
+            fullscreen_gradient = QLinearGradient(QPointF(0, 0), QPointF(width, height))
+            # Use theme colors with configurable opacity for background effect
+            start_color = QColor(*current_theme["border_color_start"])
+            end_color = QColor(*current_theme["border_color_end"])
+            gradient_opacity = current_theme.get("fullscreen_gradient_opacity", 30)
+            start_color.setAlpha(gradient_opacity)
+            end_color.setAlpha(gradient_opacity)
+            fullscreen_gradient.setColorAt(0.0, start_color)
+            fullscreen_gradient.setColorAt(1.0, end_color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(fullscreen_gradient))
+            painter.drawRect(0, 0, width, height)
+
         # Gradient for border
         gradient = QLinearGradient(QPointF(0, 0), QPointF(width, height))
         gradient.setColorAt(0.0, QColor(*current_theme["border_color_start"]))
@@ -1161,7 +1217,7 @@ class BorderWidget(QWidget):
             0, current_theme["notification_offset"], width - 1, current_theme["notification_offset"]
         )  # Top
 
-        # Position controls
+        # Position controls with proper z-ordering
         if self.control_widget:
             # Force the control widget to resize based on visible buttons only
             self.control_widget.resize(btn_total_width, self.control_widget.height())
@@ -1175,6 +1231,8 @@ class BorderWidget(QWidget):
                 + (text_area_height - self.control_widget.height()) // 2
             )
             self.control_widget.move(control_x, control_y)
+            # Ensure control widget stays on top with proper z-ordering
+            self.control_widget.raise_()
             self.control_widget.show()
 
         logging.info("Gradient border and notification bar drawn successfully")
