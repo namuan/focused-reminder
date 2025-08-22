@@ -77,6 +77,7 @@ DEFAULT_THEME = {
     "notification_offset": 5,
     "button_spacing": 6,
     "button_container_padding": 10,
+    "reminder_time_window_minutes": 15,
 }
 
 # Predefined themes
@@ -401,6 +402,12 @@ class ConfigDialog(QDialog):
         self.timer_minutes_spin.setValue(max(1, current_timer // 60))
         custom_layout.addRow("Timer (minutes):", self.timer_minutes_spin)
 
+        # Reminder time window configuration (minutes)
+        self.reminder_time_window_spin = QSpinBox()
+        self.reminder_time_window_spin.setRange(1, 120)
+        self.reminder_time_window_spin.setValue(current_theme["reminder_time_window_minutes"])
+        custom_layout.addRow("Reminder Time Window (minutes):", self.reminder_time_window_spin)
+
         custom_group.setLayout(custom_layout)
         layout.addWidget(custom_group)
 
@@ -449,6 +456,10 @@ class ConfigDialog(QDialog):
         self.font_family_edit.setText(theme["main_font_family"])
         self.font_size_spin.setValue(theme["main_font_size"])
 
+        # Update reminder time window if it exists in the theme
+        if "reminder_time_window_minutes" in theme:
+            self.reminder_time_window_spin.setValue(theme["reminder_time_window_minutes"])
+
     def get_current_config(self):
         return {
             "border_color_start": self.border_start_btn.color,
@@ -477,6 +488,7 @@ class ConfigDialog(QDialog):
             "notification_offset": current_theme["notification_offset"],
             "button_spacing": current_theme["button_spacing"],
             "button_container_padding": current_theme["button_container_padding"],
+            "reminder_time_window_minutes": self.reminder_time_window_spin.value(),
         }
 
     def apply_changes(self):
@@ -621,8 +633,12 @@ class BorderWidget(QWidget):
         else:
             logging.info("User dismissed the permission prompt.")
 
-    def get_incomplete_reminders_due_today(self):
-        """Get incomplete reminders due today or in the past"""
+    def get_incomplete_reminders_due_today(self, filter_by_time_window=False):
+        """Get incomplete reminders due today or in the past
+
+        Args:
+            filter_by_time_window (bool): If True, only return reminders within the configured time window
+        """
         if self.remind_kit:
             try:
                 from datetime import datetime, timedelta
@@ -631,6 +647,16 @@ class BorderWidget(QWidget):
                 tomorrow = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
                 reminders = list(self.remind_kit.get_reminders(due_before=tomorrow, is_completed=False))
                 logging.info(f"Found {len(reminders)} incomplete reminders due before tomorrow")
+
+                # Optionally filter by time window
+                if filter_by_time_window:
+                    filtered_reminders = []
+                    for reminder in reminders:
+                        if self.is_reminder_due_soon(reminder):
+                            filtered_reminders.append(reminder)
+                    logging.info(f"Filtered to {len(filtered_reminders)} reminders within time window")
+                    return filtered_reminders
+
                 return reminders
             except Exception as e:
                 # If we receive an authorization-like error while fetching, prompt once for permission.
@@ -642,16 +668,75 @@ class BorderWidget(QWidget):
                 return []
         return []
 
+    def is_reminder_due_soon(self, reminder):
+        """Check if a reminder is due within the configured time window
+
+        Handles edge cases:
+        - Reminders without due dates (always considered due soon)
+        - Past due reminders (always considered due soon)
+        - Timezone-aware comparisons
+        - Invalid or malformed due dates
+        """
+        import logging
+        from datetime import datetime, timedelta
+
+        # Edge case 1: If no due date, consider it always due soon
+        if not reminder.due_date:
+            logging.debug(f"Reminder '{getattr(reminder, 'title', 'Unknown')}' has no due date, including")
+            return True
+
+        try:
+            # Get current time and time window
+            now = datetime.now()
+            time_window_minutes = current_theme.get("reminder_time_window_minutes", 15)
+            time_window = timedelta(minutes=time_window_minutes)
+
+            # Edge case 2: Handle timezone-aware vs naive datetime comparison
+            reminder_due = reminder.due_date
+            if reminder_due.tzinfo is not None and now.tzinfo is None:
+                # Convert timezone-aware reminder to local time
+                reminder_due = reminder_due.replace(tzinfo=None)
+                logging.debug("Converted timezone-aware due date to naive for comparison")
+            elif reminder_due.tzinfo is None and now.tzinfo is not None:
+                # Convert naive reminder to timezone-aware
+                now = now.replace(tzinfo=None)
+                logging.debug("Converted timezone-aware current time to naive for comparison")
+
+            # Calculate time until due
+            time_until_due = reminder_due - now
+
+            # Edge case 3: Past due reminders are always considered due soon
+            if time_until_due.total_seconds() < 0:
+                logging.debug(f"Reminder '{getattr(reminder, 'title', 'Unknown')}' is past due, including")
+                return True
+
+            # Check if due date is within the time window
+            is_due_soon = time_until_due <= time_window
+            if is_due_soon:
+                logging.debug(
+                    f"Reminder '{getattr(reminder, 'title', 'Unknown')}' is within time window: {time_until_due}"
+                )
+
+            return is_due_soon
+
+        except Exception as e:
+            # Edge case 4: Handle any unexpected errors with due date processing
+            logging.warning(f"Error processing due date for reminder '{getattr(reminder, 'title', 'Unknown')}': {e}")
+            # When in doubt, include the reminder to avoid missing important items
+            return True
+
     def get_next_reminder_text(self):
         """Get text for the next due reminder and cache its identity for completion"""
-        reminders = self.get_incomplete_reminders_due_today()
-        if reminders:
-            # Sort reminders by due date (earliest first)
-            reminders.sort(key=lambda r: r.due_date if r.due_date else float("inf"))
-            for reminder in reminders:
+        # Use the optimized filtering at the data retrieval level
+        filtered_reminders = self.get_incomplete_reminders_due_today(filter_by_time_window=True)
+
+        if filtered_reminders:
+            # Sort filtered reminders by due date (earliest first)
+            filtered_reminders.sort(key=lambda r: r.due_date if r.due_date else float("inf"))
+            for reminder in filtered_reminders:
                 logging.debug(f"Found {reminder} next due reminder")
             # Get the first reminder (most urgent by due date)
-            next_reminder = reminders[0]
+            next_reminder = filtered_reminders[0]
             # Cache the currently displayed reminder id/title so we can complete exactly this one
             try:
                 self.current_reminder_id = next_reminder.id
@@ -660,6 +745,7 @@ class BorderWidget(QWidget):
                 self.current_reminder_id = None
             self.current_reminder_title = getattr(next_reminder, "title", None)
             return f"📋 {next_reminder.title}"
+
         # No reminders to show; clear cache
         self.current_reminder_id = None
         self.current_reminder_title = None
