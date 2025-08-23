@@ -568,7 +568,7 @@ class ConfigDialog(QDialog):
 
 
 class BorderWidget(QWidget):
-    def __init__(self, countdown_seconds=25 * 60):
+    def __init__(self, countdown_seconds=25 * 60, screen=None, manager=None):
         super().__init__()
         self.countdown_seconds = countdown_seconds
         self.remaining = countdown_seconds
@@ -578,6 +578,8 @@ class BorderWidget(QWidget):
         self.pause_resume_btn = None
         self.reset_btn = None
         self.remind_kit = None
+        self.screen = screen  # Store the specific screen for this widget
+        self.manager = manager  # Reference to the MultiScreenManager
 
         logging.debug("Initializing BorderWidget")
         self.init_remindkit()
@@ -797,10 +799,14 @@ class BorderWidget(QWidget):
         dialog.exec()
 
     def init_ui(self):
-        # Get the screen geometry
-        screen = QApplication.primaryScreen().geometry()
-        logging.info(f"Screen geometry: {screen}")
-        self.setGeometry(screen)
+        # Get the screen geometry - use specific screen if provided, otherwise primary
+        if self.screen:
+            screen_geometry = self.screen.geometry()
+            logging.info(f"Using specific screen geometry: {screen_geometry}")
+        else:
+            screen_geometry = QApplication.primaryScreen().geometry()
+            logging.info(f"Using primary screen geometry: {screen_geometry}")
+        self.setGeometry(screen_geometry)
 
         # Make the window frameless and transparent
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
@@ -908,12 +914,20 @@ class BorderWidget(QWidget):
             self.running = True
         self.update()
 
+        # Synchronize with other screens
+        if self.manager:
+            self.manager.sync_timer_state(self)
+
     def reset_timer(self):
         self.remaining = self.countdown_seconds
         self.running = True
         self.timer.start(1000)
         self.pause_resume_btn.setText(current_theme["icon_pause"])
         self.update()
+
+        # Synchronize with other screens
+        if self.manager:
+            self.manager.sync_timer_state(self)
 
     def get_configured_duration(self):
         """Get the current duration from config.json"""
@@ -1238,6 +1252,56 @@ class BorderWidget(QWidget):
         logging.info("Gradient border and notification bar drawn successfully")
 
 
+class MultiScreenManager:
+    """Manages BorderWidget instances across multiple screens."""
+
+    def __init__(self, countdown_seconds=25 * 60):
+        self.countdown_seconds = countdown_seconds
+        self.border_widgets = []
+        self.create_widgets_for_all_screens()
+
+    def create_widgets_for_all_screens(self):
+        """Create a BorderWidget for each available screen."""
+        app = QApplication.instance()
+        screens = app.screens()
+
+        logging.info(f"Found {len(screens)} screen(s)")
+
+        for i, screen in enumerate(screens):
+            logging.info(f"Creating BorderWidget for screen {i}: {screen.name()}")
+            widget = BorderWidget(countdown_seconds=self.countdown_seconds, screen=screen, manager=self)
+            self.border_widgets.append(widget)
+
+    def show_all(self):
+        """Show all BorderWidget instances."""
+        for widget in self.border_widgets:
+            widget.showMaximized()
+            logging.info(f"BorderWidget shown on screen: {widget.screen.name() if widget.screen else 'primary'}")
+
+    def sync_timer_state(self, source_widget):
+        """Synchronize timer state across all widgets when one changes."""
+        for widget in self.border_widgets:
+            if widget != source_widget:
+                widget.remaining = source_widget.remaining
+                widget.running = source_widget.running
+
+                # Synchronize timer objects
+                if source_widget.running:
+                    widget.timer.start(1000)
+                    if widget.pause_resume_btn:
+                        widget.pause_resume_btn.setText(current_theme["icon_pause"])
+                else:
+                    widget.timer.stop()
+                    if widget.pause_resume_btn:
+                        widget.pause_resume_btn.setText(current_theme["icon_play"])
+
+                widget.update()  # Trigger repaint
+
+    def get_widgets(self):
+        """Get all BorderWidget instances."""
+        return self.border_widgets
+
+
 def main():
     """Main entry point for the focused reminder application."""
     args = parse_args()
@@ -1248,9 +1312,10 @@ def main():
     app = QApplication([])
     logging.info("QApplication initialized")
 
-    border_widget = BorderWidget()
-    border_widget.showMaximized()
-    logging.info("BorderWidget shown")
+    # Create MultiScreenManager to handle all screens
+    screen_manager = MultiScreenManager()
+    screen_manager.show_all()
+    logging.info("All BorderWidgets shown across multiple screens")
 
     app.exec()
 
