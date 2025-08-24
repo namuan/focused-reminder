@@ -45,17 +45,17 @@ echo "🛠️  Generating application icons from: $SRC_PNG"
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"
 
-# Generate ICNS sizes (ensure exact squares using ^ and extent)
-magick "$SRC_PNG" -resize 16x16^  -gravity center -extent 16x16   "$ICONSET_DIR/icon_16x16.png"
-magick "$SRC_PNG" -resize 32x32^  -gravity center -extent 32x32   "$ICONSET_DIR/icon_16x16@2x.png"
-magick "$SRC_PNG" -resize 32x32^  -gravity center -extent 32x32   "$ICONSET_DIR/icon_32x32.png"
-magick "$SRC_PNG" -resize 64x64^  -gravity center -extent 64x64   "$ICONSET_DIR/icon_32x32@2x.png"
-magick "$SRC_PNG" -resize 128x128^ -gravity center -extent 128x128 "$ICONSET_DIR/icon_128x128.png"
-magick "$SRC_PNG" -resize 256x256^ -gravity center -extent 256x256 "$ICONSET_DIR/icon_128x128@2x.png"
-magick "$SRC_PNG" -resize 256x256^ -gravity center -extent 256x256 "$ICONSET_DIR/icon_256x256.png"
-magick "$SRC_PNG" -resize 512x512^ -gravity center -extent 512x512 "$ICONSET_DIR/icon_256x256@2x.png"
-magick "$SRC_PNG" -resize 512x512^ -gravity center -extent 512x512 "$ICONSET_DIR/icon_512x512.png"
-magick "$SRC_PNG" -resize 1024x1024^ -gravity center -extent 1024x1024 "$ICONSET_DIR/icon_512x512@2x.png"
+# Generate ICNS sizes (ensure exact squares using ^ and extent) and preserve transparency
+magick "$SRC_PNG" -background none -alpha on -resize 16x16^  -gravity center -extent 16x16   -strip "$ICONSET_DIR/icon_16x16.png"
+magick "$SRC_PNG" -background none -alpha on -resize 32x32^  -gravity center -extent 32x32   -strip "$ICONSET_DIR/icon_16x16@2x.png"
+magick "$SRC_PNG" -background none -alpha on -resize 32x32^  -gravity center -extent 32x32   -strip "$ICONSET_DIR/icon_32x32.png"
+magick "$SRC_PNG" -background none -alpha on -resize 64x64^  -gravity center -extent 64x64   -strip "$ICONSET_DIR/icon_32x32@2x.png"
+magick "$SRC_PNG" -background none -alpha on -resize 128x128^ -gravity center -extent 128x128 -strip "$ICONSET_DIR/icon_128x128.png"
+magick "$SRC_PNG" -background none -alpha on -resize 256x256^ -gravity center -extent 256x256 -strip "$ICONSET_DIR/icon_128x128@2x.png"
+magick "$SRC_PNG" -background none -alpha on -resize 256x256^ -gravity center -extent 256x256 -strip "$ICONSET_DIR/icon_256x256.png"
+magick "$SRC_PNG" -background none -alpha on -resize 512x512^ -gravity center -extent 512x512 -strip "$ICONSET_DIR/icon_256x256@2x.png"
+magick "$SRC_PNG" -background none -alpha on -resize 512x512^ -gravity center -extent 512x512 -strip "$ICONSET_DIR/icon_512x512.png"
+magick "$SRC_PNG" -background none -alpha on -resize 1024x1024^ -gravity center -extent 1024x1024 -strip "$ICONSET_DIR/icon_512x512@2x.png"
 
 # Build ICNS
 iconutil -c icns "$ICONSET_DIR" -o "$ICNS_OUT"
@@ -78,7 +78,7 @@ magick "$SRC_PNG" -background none -alpha on -filter Lanczos -define filter:lobe
 magick "$SRC_PNG" -background none -alpha on -filter Lanczos -define filter:lobes=3 -resize 256x256^ -gravity center -extent 256x256 -strip "$TMP256"
 
 # Compose multi-size ICO
-magick "$TMP16" "$TMP24" "$TMP32" "$TMP48" "$TMP64" "$TMP128" "$TMP256" "$ICO_OUT"
+magick "$TMP128" "$TMP256" "$ICO_OUT"
 
 # Cleanup
 rm -rf "$ICONSET_DIR"

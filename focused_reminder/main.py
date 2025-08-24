@@ -587,6 +587,13 @@ class BorderWidget(QWidget):
         # Track the reminder currently shown in the notification bar
         self.current_reminder_id = None
         self.current_reminder_title = None
+
+        # Visual feedback state for click detection
+        self.click_highlight_active = False
+        self.click_highlight_timer = QTimer(self)
+        self.click_highlight_timer.timeout.connect(self.clear_click_highlight)
+        self.click_highlight_timer.setSingleShot(True)
+
         self.init_ui()
         self.init_timer()
         self.setup_shortcuts()
@@ -960,6 +967,10 @@ class BorderWidget(QWidget):
             self.current_reminder_id = None
             self.current_reminder_title = None
             self.update()
+
+            # Synchronize reminder completion across multiple screens if manager is available
+            if self.manager:
+                self.manager.sync_reminder_action(self, "complete")
         except Exception:
             logging.exception(f"Failed to complete reminder id={self.current_reminder_id}")
 
@@ -999,6 +1010,10 @@ class BorderWidget(QWidget):
             self.current_reminder_id = None
             self.current_reminder_title = None
             self.update()
+
+            # Synchronize reminder snooze across multiple screens if manager is available
+            if self.manager:
+                self.manager.sync_reminder_action(self, "snooze")
         except Exception:
             logging.exception(f"Failed to snooze reminder id={self.current_reminder_id}")
             # Don't clear the cached reminder if snooze failed, so user can try again
@@ -1115,6 +1130,55 @@ class BorderWidget(QWidget):
             logging.warning(f"Could not fetch original reminder by ID: {e}")
             return
 
+    def calculate_reminder_text_area_bounds(self):
+        """Calculate the bounds of the reminder text area.
+
+        This method extracts and reuses the text area calculation logic
+        from the paintEvent method, allowing other methods to determine
+        the position and size of the notification bar area.
+
+        Returns:
+            tuple: (text_area_x, text_area_y, text_area_width, text_area_height)
+                  representing the bounds of the reminder text area
+        """
+        width = self.width()
+
+        # Font settings (reuse from paintEvent)
+        font = QFont(current_theme["main_font_family"], current_theme["main_font_size"])
+        font_metrics = QFontMetrics(font)
+
+        # Build text string (reuse from paintEvent)
+        mm, ss = divmod(self.remaining, 60)
+        timer_str = f"{mm:02}:{ss:02}"
+
+        # Get reminder text if available
+        reminder_text = self.get_next_reminder_text()
+
+        display_text = f"{timer_str}   {reminder_text}" if reminder_text else timer_str
+        text_width = font_metrics.horizontalAdvance(display_text)
+        text_height = font_metrics.height()
+
+        # Calculate button width based on visible buttons (reuse from paintEvent)
+        visible_buttons = [self.pause_resume_btn, self.reset_btn]  # Always visible
+        if reminder_text:  # Add reminder-specific buttons when reminder is available
+            visible_buttons.extend([self.complete_reminder_btn, self.snooze_btn])
+
+        btn_total_width = sum(btn.width() for btn in visible_buttons if btn is not None)
+        btn_total_width += (len(visible_buttons) - 1) * current_theme["button_spacing"]  # Spacings between buttons
+
+        # Calculate text area dimensions (reuse from paintEvent)
+        text_area_width = (
+            text_width
+            + current_theme["notification_padding"]
+            + btn_total_width
+            + current_theme["button_container_padding"]
+        )
+        text_area_height = text_height + current_theme["notification_padding"]
+        text_area_x = (width - text_area_width) // 2
+        text_area_y = current_theme["notification_offset"]
+
+        return (text_area_x, text_area_y, text_area_width, text_area_height)
+
     def paintEvent(self, event):
         logging.debug("Painting border and notification bar")
         painter = QPainter(self)
@@ -1208,6 +1272,16 @@ class BorderWidget(QWidget):
             text_area, current_theme["notification_corner_radius"], current_theme["notification_corner_radius"]
         )
 
+        # Draw click highlight effect if active
+        if self.click_highlight_active and reminder_text:
+            # Create a subtle white overlay for the highlight effect
+            highlight_color = QColor(255, 255, 255, 60)  # Semi-transparent white
+            painter.setBrush(QBrush(highlight_color))
+            painter.drawRoundedRect(
+                text_area, current_theme["notification_corner_radius"], current_theme["notification_corner_radius"]
+            )
+            logging.debug("Drawing click highlight effect")
+
         # Draw text
         painter.setPen(QColor(*current_theme["notification_text_color"]))
         text_rect = text_area.adjusted(
@@ -1250,6 +1324,251 @@ class BorderWidget(QWidget):
             self.control_widget.show()
 
         logging.info("Gradient border and notification bar drawn successfully")
+
+    def mousePressEvent(self, event):
+        """Handle mouse press events on the BorderWidget.
+
+        This method captures mouse clicks anywhere on the border widget,
+        with special handling for clicks within the reminder text area.
+        Handles edge case when no reminder is displayed.
+        """
+        click_pos = event.position()
+        logging.info(f"[CLICK EVENT] Mouse press detected at position: ({click_pos.x():.1f}, {click_pos.y():.1f})")
+
+        # Check if there's a reminder currently displayed
+        reminder_text = self.get_next_reminder_text()
+
+        if not reminder_text:
+            # Edge case: No reminder is displayed, ignore clicks in text area
+            logging.info("[CLICK EVENT] No reminder displayed, handling as general click")
+            self.handle_general_click(click_pos)
+        else:
+            # Get the reminder text area bounds
+            text_area_x, text_area_y, text_area_width, text_area_height = self.calculate_reminder_text_area_bounds()
+
+            logging.debug(
+                f"[CLICK EVENT] Reminder text area bounds: x={text_area_x}, y={text_area_y}, width={text_area_width}, height={text_area_height}"
+            )
+            logging.debug(
+                f"[CLICK EVENT] Current reminder: '{reminder_text[:50]}{'...' if len(reminder_text) > 50 else ''}'"
+            )
+
+            # Check if click occurred within the reminder text area
+            if (
+                text_area_x <= click_pos.x() <= text_area_x + text_area_width
+                and text_area_y <= click_pos.y() <= text_area_y + text_area_height
+            ):
+                logging.info("[CLICK EVENT] Click detected WITHIN reminder text area - triggering app opening")
+                self.handle_reminder_area_click(click_pos)
+            else:
+                logging.info("[CLICK EVENT] Click detected OUTSIDE reminder text area - general handling")
+                self.handle_general_click(click_pos)
+
+        # Call the parent implementation to ensure proper event handling
+        super().mousePressEvent(event)
+
+    def handle_reminder_area_click(self, click_pos):
+        """Handle clicks that occur within the reminder text area.
+
+        Args:
+            click_pos: The position where the click occurred
+        """
+        logging.info(
+            f"[APP OPENING] Handling reminder area click at position: ({click_pos.x():.1f}, {click_pos.y():.1f})"
+        )
+
+        # Log current reminder context
+        if self.current_reminder_title:
+            logging.info(
+                f"[APP OPENING] Current reminder context: '{self.current_reminder_title}' (ID: {self.current_reminder_id})"
+            )
+        else:
+            logging.info("[APP OPENING] No specific reminder context available")
+
+        # Trigger visual feedback for successful click detection
+        self.show_click_highlight()
+
+        # Open the Reminders app when clicking on the reminder text area
+        logging.info("[APP OPENING] Attempting to open Reminders app...")
+        success = self.open_reminders_app()
+
+        if success:
+            logging.info("[APP OPENING] ✓ Successfully opened Reminders app from click")
+            # Synchronize the app opening action across multiple screens if manager is available
+            if self.manager:
+                logging.debug(
+                    f"[APP OPENING] Synchronizing app opening across {len(self.manager.border_widgets)} screens"
+                )
+                self.manager.sync_reminder_action(self, "open_app")
+        else:
+            logging.error("[APP OPENING] ✗ Failed to open Reminders app from click")
+            # Handle error case with user feedback
+            self.handle_reminders_app_error()
+
+        # Additional functionality could be added here:
+        # - Show reminder context menu
+        # - Toggle reminder completion
+        # - Open reminder details dialog
+        # - etc.
+
+    def show_click_highlight(self):
+        """Show visual feedback for successful click detection.
+
+        Activates a brief highlight effect that will be cleared automatically
+        after a short duration. Also synchronizes across multiple screens.
+        """
+        self.click_highlight_active = True
+        self.update()  # Trigger repaint to show highlight
+
+        # Start timer to clear highlight after 200ms
+        self.click_highlight_timer.start(200)
+        logging.debug("[VISUAL FEEDBACK] Click highlight activated for 200ms")
+
+        # Synchronize highlight across multiple screens if manager is available
+        if self.manager:
+            logging.debug(
+                f"[VISUAL FEEDBACK] Synchronizing highlight across {len(self.manager.border_widgets)} screens"
+            )
+            self.manager.sync_click_highlight(self)
+
+    def clear_click_highlight(self):
+        """Clear the visual feedback highlight.
+
+        This method is called automatically by the timer to remove
+        the highlight effect after the specified duration.
+        """
+        self.click_highlight_active = False
+        self.update()  # Trigger repaint to clear highlight
+        logging.debug("[VISUAL FEEDBACK] Click highlight cleared automatically")
+
+    def handle_general_click(self, click_pos):
+        """Handle clicks that occur outside the reminder text area.
+
+        Args:
+            click_pos: The position where the click occurred
+        """
+        logging.info(f"[GENERAL CLICK] Handling general click at position: ({click_pos.x():.1f}, {click_pos.y():.1f})")
+        logging.debug("[GENERAL CLICK] Click occurred outside reminder text area - no app opening triggered")
+
+        # Placeholder for general click functionality
+        # This could be used to:
+        # - Toggle control visibility
+        # - Open configuration dialog
+        # - Show general context menu
+        # - etc.
+        pass
+
+    def open_reminders_app(self):
+        """Open the macOS Reminders app using QDesktopServices.
+
+        This method attempts to open the native Reminders application
+        on macOS using the system's default URL handler.
+
+        Based on research:
+        - x-apple-reminderkit:// is the current working scheme for iOS 13+ and macOS 13+
+        - reminders:// was deprecated and doesn't work on macOS 13 (Ventura) and later
+        - x-apple-reminder:// was an older scheme that no longer works
+
+        Returns:
+            bool: True if the app was successfully opened, False otherwise
+        """
+        try:
+            import sys
+
+            platform_info = "macOS" if sys.platform == "darwin" else sys.platform
+            logging.info(f"[URL SCHEME] Starting Reminders app opening sequence on {platform_info}")
+
+            # Primary scheme: x-apple-reminderkit:// (works on modern macOS/iOS)
+            logging.debug("[URL SCHEME] Attempting primary scheme: x-apple-reminderkit://")
+            reminders_url = QtQUrl("x-apple-reminderkit://")
+            success = QDesktopServices.openUrl(reminders_url)
+
+            if success:
+                logging.info("[URL SCHEME] ✓ Successfully opened Reminders app using x-apple-reminderkit://")
+                return True
+            else:
+                # Fallback 1: try the older reminders:// scheme (for older macOS versions)
+                logging.warning("[URL SCHEME] ✗ Primary scheme 'x-apple-reminderkit://' failed")
+                logging.debug("[URL SCHEME] Attempting fallback 1: reminders://")
+                fallback_url = QtQUrl("reminders://")
+                success = QDesktopServices.openUrl(fallback_url)
+
+                if success:
+                    logging.info("[URL SCHEME] ✓ Successfully opened Reminders app using reminders:// fallback")
+                    return True
+                else:
+                    # Fallback 2: try the even older x-apple-reminder:// scheme
+                    logging.warning("[URL SCHEME] ✗ Fallback 1 'reminders://' failed")
+                    logging.debug("[URL SCHEME] Attempting fallback 2: x-apple-reminder://")
+                    old_fallback_url = QtQUrl("x-apple-reminder://")
+                    success = QDesktopServices.openUrl(old_fallback_url)
+
+                    if success:
+                        logging.info(
+                            "[URL SCHEME] ✓ Successfully opened Reminders app using x-apple-reminder:// fallback"
+                        )
+                        return True
+                    else:
+                        # All URL schemes failed
+                        logging.error("[URL SCHEME] ✗ All URL schemes failed to open Reminders app:")
+                        logging.error("[URL SCHEME]   1. x-apple-reminderkit:// (primary) - FAILED")
+                        logging.error("[URL SCHEME]   2. reminders:// (fallback 1) - FAILED")
+                        logging.error("[URL SCHEME]   3. x-apple-reminder:// (fallback 2) - FAILED")
+                        logging.error(
+                            "[URL SCHEME] Possible causes: app not installed, security restrictions, or unsupported system"
+                        )
+                        return False
+
+        except Exception:
+            logging.exception("Exception occurred while trying to open Reminders app")
+            return False
+
+    def handle_reminders_app_error(self):
+        """Handle errors when the Reminders app cannot be opened.
+
+        Provides user feedback and potential solutions when the system
+        fails to open the Reminders application.
+        """
+        logging.error("Handling Reminders app opening error")
+
+        try:
+            # Show a user-friendly error message
+            from PyQt6.QtWidgets import QMessageBox
+
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Unable to Open Reminders")
+            msg.setIcon(QMessageBox.Icon.Warning)
+
+            error_text = (
+                "Could not open the Reminders app automatically.\n\n"
+                "This might happen if:\n"
+                "• The Reminders app is not installed\n"
+                "• URL schemes are blocked by system security\n"
+                "• The app is not available on this system\n\n"
+                "You can try:\n"
+                "• Opening Reminders manually from Applications\n"
+                "• Checking system security settings\n"
+                "• Restarting the application"
+            )
+
+            msg.setText(error_text)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+
+            # Show the dialog non-blocking to avoid interfering with the main app
+            msg.show()
+
+            # Auto-close the dialog after 5 seconds
+            from PyQt6.QtCore import QTimer
+
+            close_timer = QTimer(self)
+            close_timer.timeout.connect(msg.close)
+            close_timer.setSingleShot(True)
+            close_timer.start(5000)  # 5 seconds
+
+            logging.info("Error dialog shown to user")
+
+        except Exception:
+            logging.exception("Reminders app could not be opened. Please open it manually.")
 
 
 class MultiScreenManager:
@@ -1296,6 +1615,52 @@ class MultiScreenManager:
                         widget.pause_resume_btn.setText(current_theme["icon_play"])
 
                 widget.update()  # Trigger repaint
+
+    def sync_click_highlight(self, source_widget):
+        """Synchronize click highlight across all screens.
+
+        When a click is detected on one screen, show the highlight effect
+        on all screens to provide consistent visual feedback.
+
+        Args:
+            source_widget: The widget where the click originated
+        """
+        logging.debug(f"Synchronizing click highlight across {len(self.border_widgets)} screens")
+        for widget in self.border_widgets:
+            if widget != source_widget:
+                widget.click_highlight_active = True
+                widget.update()  # Trigger repaint to show highlight
+                # Start timer to clear highlight after 200ms
+                widget.click_highlight_timer.start(200)
+
+    def sync_reminder_action(self, source_widget, action_type, *args):
+        """Synchronize reminder actions across all screens.
+
+        When a reminder action (complete, snooze) is performed on one screen,
+        update the reminder state on all screens.
+
+        Args:
+            source_widget: The widget where the action originated
+            action_type: Type of action ('complete', 'snooze', 'open_app')
+            *args: Additional arguments for the action
+        """
+        logging.debug(f"Synchronizing reminder action '{action_type}' across {len(self.border_widgets)} screens")
+
+        for widget in self.border_widgets:
+            if widget != source_widget:
+                if action_type == "complete":
+                    # Clear the current reminder on all screens since it's completed
+                    widget.current_reminder_id = None
+                    widget.current_reminder_title = None
+                elif action_type == "snooze":
+                    # Clear the current reminder on all screens since it's snoozed
+                    widget.current_reminder_id = None
+                    widget.current_reminder_title = None
+                elif action_type == "open_app":
+                    # No state change needed for opening app
+                    pass
+
+                widget.update()  # Trigger repaint to reflect changes
 
     def get_widgets(self):
         """Get all BorderWidget instances."""
