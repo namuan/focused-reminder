@@ -532,17 +532,21 @@ class ConfigDialog(QDialog):
         if self.parent():
             # Apply theme
             self.parent().apply_theme()
-            # Apply timer value (entered in minutes) and restart timer similar to reset
+            # Apply timer value (entered in minutes) using centralized management
             new_timer = self.timer_minutes_spin.value() * 60
-            self.parent().countdown_seconds = new_timer
-            self.parent().remaining = new_timer
-            self.parent().running = True
-            if hasattr(self.parent(), "timer"):
-                self.parent().timer.start(1000)
-            # Ensure buttons reflect running state after reset
-            if self.parent().pause_resume_btn:
-                self.parent().pause_resume_btn.setText(current_theme["icon_pause"])
-            self.parent().update()
+            if self.parent().manager:
+                # Use centralized timer management
+                self.parent().manager.update_countdown_duration(new_timer)
+                logging.info(f"Timer duration updated to {new_timer} seconds via centralized management")
+            else:
+                # Fallback for single widget (shouldn't happen in multi-screen setup)
+                self.parent().countdown_seconds = new_timer
+                self.parent().remaining = new_timer
+                self.parent().running = True
+                if self.parent().pause_resume_btn:
+                    self.parent().pause_resume_btn.setText(current_theme["icon_pause"])
+                self.parent().update()
+                logging.warning("Applied timer changes to single widget - centralized management not available")
         # Save config after apply
         save_config()
 
@@ -906,33 +910,33 @@ class BorderWidget(QWidget):
         self.update()
 
     def init_timer(self):
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.tick)
-        self.timer.start(1000)
+        # Timer is now managed centrally by MultiScreenManager
+        # Individual widgets no longer need their own timers
+        logging.debug("BorderWidget timer initialization - using centralized timer management")
 
     def toggle_pause_resume(self):
         if self.running:
-            self.timer.stop()
             self.pause_resume_btn.setText(current_theme["icon_play"])
             self.running = False
+            logging.info("Timer paused by user action")
         else:
-            self.timer.start(1000)
             self.pause_resume_btn.setText(current_theme["icon_pause"])
             self.running = True
+            logging.info("Timer resumed by user action")
         self.update()
 
-        # Synchronize with other screens
+        # Synchronize with other screens via centralized manager
         if self.manager:
             self.manager.sync_timer_state(self)
 
     def reset_timer(self):
         self.remaining = self.countdown_seconds
         self.running = True
-        self.timer.start(1000)
         self.pause_resume_btn.setText(current_theme["icon_pause"])
+        logging.info(f"Timer reset to {self.countdown_seconds} seconds by user action")
         self.update()
 
-        # Synchronize with other screens
+        # Synchronize with other screens via centralized manager
         if self.manager:
             self.manager.sync_timer_state(self)
 
@@ -941,15 +945,7 @@ class BorderWidget(QWidget):
         load_config()  # Refresh config in case it changed
         return self.countdown_seconds
 
-    def tick(self):
-        if self.remaining > 0:
-            self.remaining -= 1
-        else:
-            self.timer.stop()
-            self.running = False
-            self.pause_resume_btn.setText(current_theme["icon_play"])
-            self.remaining = self.countdown_seconds  # Reset to configured duration
-        self.update()
+    # tick method removed - timer management is now centralized in MultiScreenManager
 
     def complete_current_reminder(self):
         """Mark exactly the reminder currently displayed as completed, without re-fetching."""
@@ -1572,12 +1568,28 @@ class BorderWidget(QWidget):
 
 
 class MultiScreenManager:
-    """Manages BorderWidget instances across multiple screens."""
+    """Manages BorderWidget instances across multiple screens with centralized timer."""
 
     def __init__(self, countdown_seconds=25 * 60):
         self.countdown_seconds = countdown_seconds
+        self.remaining = countdown_seconds
+        self.running = True  # auto-start
         self.border_widgets = []
+
+        # Centralized timer management
+        self.master_timer = QTimer()
+        self.master_timer.timeout.connect(self.tick_all_widgets)
+
+        # Synchronization tracking
+        self.last_sync_time = 0
+        self.sync_interval = 10  # Force sync every 10 seconds to prevent drift
+
+        logging.info("MultiScreenManager initialized with centralized timer management")
         self.create_widgets_for_all_screens()
+
+        # Start the master timer
+        self.master_timer.start(1000)
+        logging.info("Master timer started for all screens")
 
     def create_widgets_for_all_screens(self):
         """Create a BorderWidget for each available screen."""
@@ -1597,24 +1609,163 @@ class MultiScreenManager:
             widget.showMaximized()
             logging.info(f"BorderWidget shown on screen: {widget.screen.name() if widget.screen else 'primary'}")
 
-    def sync_timer_state(self, source_widget):
-        """Synchronize timer state across all widgets when one changes."""
-        for widget in self.border_widgets:
-            if widget != source_widget:
-                widget.remaining = source_widget.remaining
-                widget.running = source_widget.running
+    def tick_all_widgets(self):
+        """Central timer tick that updates all widgets simultaneously with error handling."""
+        try:
+            if self.running and self.remaining > 0:
+                self.remaining -= 1
+                logging.debug(f"Master timer tick: {self.remaining} seconds remaining")
+            elif self.remaining <= 0 and self.running:
+                # Timer finished
+                self.running = False
+                self.remaining = self.countdown_seconds  # Reset to configured duration
+                self.master_timer.stop()
+                logging.info("Master timer finished, stopping all widgets")
 
-                # Synchronize timer objects
-                if source_widget.running:
-                    widget.timer.start(1000)
-                    if widget.pause_resume_btn:
-                        widget.pause_resume_btn.setText(current_theme["icon_pause"])
-                else:
-                    widget.timer.stop()
-                    if widget.pause_resume_btn:
-                        widget.pause_resume_btn.setText(current_theme["icon_play"])
+                # Update all widgets to show finished state
+                self._update_widgets_safely(finished_state=True)
+
+            # Update all widgets with current state
+            self._update_widgets_safely()
+
+            # Periodic forced synchronization to prevent any drift
+            self.last_sync_time += 1
+            if self.last_sync_time >= self.sync_interval:
+                self.force_sync_all_widgets()
+                self.last_sync_time = 0
+
+        except Exception as e:
+            logging.exception("Error in master timer tick")
+            self._handle_timer_error(e)
+
+    def _update_widgets_safely(self, finished_state=False):
+        """Safely update all widgets with error handling for individual widget failures."""
+        failed_widgets = []
+
+        for i, widget in enumerate(self.border_widgets):
+            try:
+                widget.remaining = self.remaining
+                widget.running = self.running
+
+                if finished_state and widget.pause_resume_btn:
+                    widget.pause_resume_btn.setText(current_theme["icon_play"])
 
                 widget.update()  # Trigger repaint
+
+            except Exception as e:
+                logging.exception(
+                    f"Error updating widget {i} on screen {widget.screen.name() if widget.screen else 'unknown'}"
+                )
+                failed_widgets.append((i, widget, e))
+
+        # Handle failed widgets
+        if failed_widgets:
+            self._handle_widget_update_failures(failed_widgets)
+
+    def _handle_widget_update_failures(self, failed_widgets):
+        """Handle widgets that failed to update properly."""
+        logging.warning(f"Failed to update {len(failed_widgets)} widgets")
+
+        for i, widget, _error in failed_widgets:
+            try:
+                # Attempt recovery by recreating the widget's UI elements
+                logging.info(f"Attempting to recover widget {i}")
+                widget.apply_theme()  # This recreates buttons and UI
+                widget.remaining = self.remaining
+                widget.running = self.running
+                widget.update()
+                logging.info(f"Successfully recovered widget {i}")
+            except Exception:
+                logging.exception(f"Failed to recover widget {i}")
+                # Mark widget as problematic but don't remove it
+                # User can still interact with other screens
+
+    def _handle_timer_error(self, error):
+        """Handle critical timer errors with recovery mechanisms."""
+        logging.error(f"Critical timer error occurred: {error}")
+
+        try:
+            # Attempt to restart the master timer
+            if self.master_timer.isActive():
+                self.master_timer.stop()
+
+            # Reset timer state to a known good state
+            if self.remaining <= 0 or self.remaining > self.countdown_seconds:
+                self.remaining = self.countdown_seconds
+                logging.info("Reset timer to initial duration due to error")
+
+            # Restart timer if it should be running
+            if self.running:
+                self.master_timer.start(1000)
+                logging.info("Master timer restarted after error recovery")
+
+            # Force synchronization of all widgets
+            self.force_sync_all_widgets()
+
+        except Exception as recovery_error:
+            logging.critical(f"Failed to recover from timer error: {recovery_error}")
+            # Last resort: stop all timers to prevent further issues
+            self.running = False
+            if self.master_timer.isActive():
+                self.master_timer.stop()
+            logging.critical("Timer system stopped due to unrecoverable error")
+
+    def force_sync_all_widgets(self):
+        """Force synchronization of all widgets to prevent drift."""
+        logging.debug("Performing periodic synchronization across all screens")
+        try:
+            for widget in self.border_widgets:
+                widget.remaining = self.remaining
+                widget.running = self.running
+                # Ensure button states are correct
+                if widget.pause_resume_btn:
+                    if self.running:
+                        widget.pause_resume_btn.setText(current_theme["icon_pause"])
+                    else:
+                        widget.pause_resume_btn.setText(current_theme["icon_play"])
+                widget.update()
+        except Exception as e:
+            logging.exception("Error during forced synchronization")
+            self._handle_timer_error(e)
+
+    def sync_timer_state(self, source_widget):
+        """Synchronize timer state across all widgets when user action occurs."""
+        try:
+            logging.info(
+                f"Synchronizing timer state from user action: running={source_widget.running}, remaining={source_widget.remaining}"
+            )
+
+            # Update master timer state
+            self.remaining = source_widget.remaining
+            self.running = source_widget.running
+
+            # Control master timer based on running state
+            if self.running:
+                if not self.master_timer.isActive():
+                    self.master_timer.start(1000)
+                    logging.info("Master timer resumed")
+            else:
+                if self.master_timer.isActive():
+                    self.master_timer.stop()
+                    logging.info("Master timer paused")
+
+            # Synchronize all widgets immediately using safe update method
+            self._update_widgets_safely()
+
+            # Additional button state synchronization
+            for widget in self.border_widgets:
+                try:
+                    if widget.pause_resume_btn:
+                        if self.running:
+                            widget.pause_resume_btn.setText(current_theme["icon_pause"])
+                        else:
+                            widget.pause_resume_btn.setText(current_theme["icon_play"])
+                except Exception:
+                    logging.exception("Error updating button state for widget")
+
+        except Exception as e:
+            logging.exception("Error in sync_timer_state")
+            self._handle_timer_error(e)
 
     def sync_click_highlight(self, source_widget):
         """Synchronize click highlight across all screens.
@@ -1661,6 +1812,28 @@ class MultiScreenManager:
                     pass
 
                 widget.update()  # Trigger repaint to reflect changes
+
+    def update_countdown_duration(self, new_duration_seconds):
+        """Update the countdown duration for all widgets and reset timer."""
+        logging.info(f"Updating countdown duration to {new_duration_seconds} seconds across all screens")
+
+        self.countdown_seconds = new_duration_seconds
+        self.remaining = new_duration_seconds
+        self.running = True
+
+        # Update all widgets
+        for widget in self.border_widgets:
+            widget.countdown_seconds = new_duration_seconds
+            widget.remaining = new_duration_seconds
+            widget.running = True
+            if widget.pause_resume_btn:
+                widget.pause_resume_btn.setText(current_theme["icon_pause"])
+            widget.update()
+
+        # Restart master timer
+        if not self.master_timer.isActive():
+            self.master_timer.start(1000)
+            logging.info("Master timer restarted after duration update")
 
     def get_widgets(self):
         """Get all BorderWidget instances."""
