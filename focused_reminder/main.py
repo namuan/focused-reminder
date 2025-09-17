@@ -1,9 +1,9 @@
-# focused_reminder/main.py
-import json  # =============================================================================
+import json
 import logging
 import os
 import sys
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
@@ -22,6 +22,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QColorDialog,
     QComboBox,
     QDialog,
@@ -67,6 +68,7 @@ DEFAULT_THEME = {
     "icon_reset": "⏮",
     "icon_done": "✓",
     "icon_snooze": "💤",
+    "icon_close": "✕",
     # Fonts
     "main_font_family": "Arial",
     "main_font_size": 14,
@@ -244,6 +246,7 @@ def themes_match(theme1, theme2):
         "icon_reset",
         "icon_done",
         "icon_snooze",
+        "icon_close",
         "main_font_family",
         "main_font_size",
     ]
@@ -351,8 +354,6 @@ class ConfigDialog(QDialog):
         self.gradient_opacity_spin.setValue(current_theme.get("fullscreen_gradient_opacity", 30))
         visual_layout.addRow("Gradient Opacity (0-255):", self.gradient_opacity_spin)
 
-        from PyQt6.QtWidgets import QCheckBox
-
         self.gradient_enabled_check = QCheckBox()
         self.gradient_enabled_check.setChecked(current_theme.get("fullscreen_gradient_enabled", True))
         visual_layout.addRow("Enable Full-screen Gradient:", self.gradient_enabled_check)
@@ -387,6 +388,7 @@ class ConfigDialog(QDialog):
         self.icon_reset_edit = QLineEdit(current_theme["icon_reset"])
         self.icon_done_edit = QLineEdit(current_theme["icon_done"])
         self.icon_snooze_edit = QLineEdit(current_theme["icon_snooze"])
+        self.icon_close_edit = QLineEdit(current_theme["icon_close"])
 
         # Create horizontal layouts for each icon pair to maintain alignment
         pause_play_layout = QHBoxLayout()
@@ -401,6 +403,8 @@ class ConfigDialog(QDialog):
         reset_done_layout.addWidget(self.icon_reset_edit)
         reset_done_layout.addWidget(QLabel("Done:"))
         reset_done_layout.addWidget(self.icon_done_edit)
+        reset_done_layout.addWidget(QLabel("Close:"))
+        reset_done_layout.addWidget(self.icon_close_edit)
         reset_done_layout.addStretch()
 
         snooze_layout = QHBoxLayout()
@@ -477,6 +481,7 @@ class ConfigDialog(QDialog):
         self.icon_reset_edit.setText(theme["icon_reset"])
         self.icon_done_edit.setText(theme["icon_done"])
         self.icon_snooze_edit.setText(theme["icon_snooze"])
+        self.icon_close_edit.setText(theme["icon_close"])
 
         self.font_family_edit.setText(theme["main_font_family"])
         self.font_size_spin.setValue(theme["main_font_size"])
@@ -511,6 +516,7 @@ class ConfigDialog(QDialog):
             "icon_reset": self.icon_reset_edit.text(),
             "icon_done": self.icon_done_edit.text(),
             "icon_snooze": self.icon_snooze_edit.text(),
+            "icon_close": self.icon_close_edit.text(),
             "main_font_family": self.font_family_edit.text(),
             "main_font_size": self.font_size_spin.value(),
             "icon_font_family": current_theme["icon_font_family"],
@@ -581,6 +587,7 @@ class BorderWidget(QWidget):
         self.complete_reminder_btn = None
         self.pause_resume_btn = None
         self.reset_btn = None
+        self.close_btn = None
         self.remind_kit = None
         self.screen = screen  # Store the specific screen for this widget
         self.manager = manager  # Reference to the MultiScreenManager
@@ -687,8 +694,6 @@ class BorderWidget(QWidget):
         """
         if self.remind_kit:
             try:
-                from datetime import datetime, timedelta
-
                 tomorrow = datetime.now() + timedelta(days=1)
                 tomorrow = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
                 reminders = list(self.remind_kit.get_reminders(due_before=tomorrow, is_completed=False))
@@ -889,10 +894,22 @@ class BorderWidget(QWidget):
         )
         self.reset_btn.clicked.connect(self.reset_timer)
 
+        # Close button
+        self.close_btn = QPushButton(current_theme["icon_close"], self.control_widget)
+        self.close_btn.setFixedSize(current_theme["button_width"], current_theme["button_height"])
+        self.close_btn.setFlat(True)
+        self.close_btn.setFont(icon_font)
+        self.close_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {current_theme['button_bg_normal']}; color: {current_theme['button_text_color']}; border: none; padding: 0px; }}"
+            f"QPushButton:hover {{ background-color: {current_theme['button_bg_hover']}; border-radius: {current_theme['button_corner_radius']}px; }}"
+        )
+        self.close_btn.clicked.connect(self.close_application)
+
         button_layout.addWidget(self.complete_reminder_btn)
         button_layout.addWidget(self.snooze_btn)
         button_layout.addWidget(self.pause_resume_btn)
         button_layout.addWidget(self.reset_btn)
+        button_layout.addWidget(self.close_btn)
 
         self.control_widget.setLayout(button_layout)
 
@@ -939,6 +956,13 @@ class BorderWidget(QWidget):
         # Synchronize with other screens via centralized manager
         if self.manager:
             self.manager.sync_timer_state(self)
+
+    def close_application(self):
+        """Close the entire application."""
+        logging.info("Application close requested")
+        from PyQt6.QtWidgets import QApplication
+
+        QApplication.instance().quit()
 
     def get_configured_duration(self):
         """Get the current duration from config.json"""
@@ -1155,7 +1179,7 @@ class BorderWidget(QWidget):
         text_height = font_metrics.height()
 
         # Calculate button width based on visible buttons (reuse from paintEvent)
-        visible_buttons = [self.pause_resume_btn, self.reset_btn]  # Always visible
+        visible_buttons = [self.pause_resume_btn, self.reset_btn, self.close_btn]  # Always visible
         if reminder_text:  # Add reminder-specific buttons when reminder is available
             visible_buttons.extend([self.complete_reminder_btn, self.snooze_btn])
 
@@ -1237,7 +1261,7 @@ class BorderWidget(QWidget):
 
         # Notification bar geometry
         # Calculate button width based on visible buttons
-        visible_buttons = [self.pause_resume_btn, self.reset_btn]  # Always visible
+        visible_buttons = [self.pause_resume_btn, self.reset_btn, self.close_btn]  # Always visible
         if reminder_text:  # Add reminder-specific buttons when reminder is available
             visible_buttons.extend([self.complete_reminder_btn, self.snooze_btn])
 
