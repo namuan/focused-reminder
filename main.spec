@@ -45,5 +45,6 @@ app = BUNDLE(coll,
                 'NSPrincipalClass': 'NSApplication',
                 'NSHighResolutionCapable': True,
                 'NSRemindersUsageDescription': 'This app needs access to your Reminders.',
+                'LSUIElement': True,
                 }
              )
