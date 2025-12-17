@@ -1611,9 +1611,52 @@ class MultiScreenManager:
         logging.info("MultiScreenManager initialized with centralized timer management")
         self.create_widgets_for_all_screens()
 
+        # Monitor configuration changes
+        app = QApplication.instance()
+        app.screenAdded.connect(self.handle_screen_added)
+        app.screenRemoved.connect(self.handle_screen_removed)
+
         # Start the master timer
         self.master_timer.start(1000)
         logging.info("Master timer started for all screens")
+
+    def handle_screen_added(self, screen):
+        """Handle new screen addition."""
+        logging.info(f"New screen detected: {screen.name()}")
+        # Check if we already have a widget for this screen
+        for widget in self.border_widgets:
+            if widget.screen == screen:
+                logging.warning(f"Widget already exists for screen: {screen.name()}")
+                return
+
+        widget = BorderWidget(countdown_seconds=self.countdown_seconds, screen=screen, manager=self)
+
+        # Sync state
+        widget.remaining = self.remaining
+        widget.running = self.running
+        if widget.pause_resume_btn:
+            if self.running:
+                widget.pause_resume_btn.setText(current_theme["icon_pause"])
+            else:
+                widget.pause_resume_btn.setText(current_theme["icon_play"])
+
+        self.border_widgets.append(widget)
+        widget.showMaximized()
+        logging.info(f"BorderWidget created and shown for new screen: {screen.name()}")
+
+    def handle_screen_removed(self, screen):
+        """Handle screen removal."""
+        logging.info(f"Screen removal detected: {screen.name()}")
+        widgets_to_remove = []
+        for widget in self.border_widgets:
+            if widget.screen == screen:
+                widgets_to_remove.append(widget)
+
+        for widget in widgets_to_remove:
+            logging.info(f"Removing BorderWidget for screen: {screen.name()}")
+            widget.close()
+            widget.deleteLater()
+            self.border_widgets.remove(widget)
 
     def create_widgets_for_all_screens(self):
         """Create a BorderWidget for each available screen."""

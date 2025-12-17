@@ -28,8 +28,8 @@ Homepage = "https://namuan.github.io/focused-reminder/"
 Repository = "https://github.com/namuan/focused-reminder"
 Documentation = "https://namuan.github.io/focused-reminder/"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest",
     "pre-commit",
     "tox-uv",
